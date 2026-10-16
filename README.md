@@ -49,7 +49,7 @@ In secretary mode, replies appear in the chat as sent by **your** account, and t
 
 ```bash
 git clone https://github.com/ygasaino1/tg-ai-secretary.git
-cd secretary-bot
+cd tg-ai-secretary
 npm install
 npx tgcloud login        # paste the CLI access token when asked
 ```
@@ -134,7 +134,7 @@ Tune it with `/delay 50` (default), `/delay 20`, or `/delay 0` to turn it off.
 ## Project layout
 
 ```
-secretary-bot/
+tg-ai-secretary/
 ├─ tgcloud/                    <- the only part that gets deployed
 │  ├─ schema.js                   database tables
 │  ├─ handlers/
