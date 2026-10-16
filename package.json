@@ -1,5 +1,5 @@
 {
-  "name": "secretary-bot",
+  "name": "tg-ai-secretary",
   "version": "1.0.0",
   "description": "A serverless Telegram AI assistant and secretary, powered by Ollama's hosted API, running on Telegram Serverless.",
   "license": "MIT",
