@@ -1,0 +1,18 @@
+{
+  "name": "secretary-bot",
+  "version": "1.0.0",
+  "description": "A serverless Telegram AI assistant and secretary, powered by Ollama's hosted API, running on Telegram Serverless.",
+  "license": "MIT",
+  "private": true,
+  "type": "module",
+  "keywords": ["telegram", "telegram-bot", "serverless", "ollama", "ai-assistant", "secretary"],
+  "scripts": {
+    "deploy": "tgcloud push",
+    "status": "tgcloud status",
+    "migrate": "tgcloud migrate",
+    "test": "node --import ./tests/register.mjs --test tests/text.test.mjs tests/pending.test.mjs tests/prompt.test.mjs tests/typing.test.mjs"
+  },
+  "devDependencies": {
+    "@tgcloud/cli": ">=0.2.0"
+  }
+}
