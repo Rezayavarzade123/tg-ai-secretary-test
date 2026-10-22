@@ -78,6 +78,7 @@ export const api = {
   deleteMessage: (params) => call('deleteMessage', params),
   sendChatAction: (params) => call('sendChatAction', params),
   answerCallbackQuery: (params) => call('answerCallbackQuery', params),
+  answerInlineQuery: (params) => call('answerInlineQuery', params),
 
   getBusinessConnection: (params) => call('getBusinessConnection', params),
 

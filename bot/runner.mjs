@@ -23,8 +23,9 @@ import { startPanel } from './panel/server.mjs';
 import messageHandler from '../tgcloud/handlers/message.js';
 import businessMessageHandler from '../tgcloud/handlers/business_message.js';
 import businessConnectionHandler from '../tgcloud/handlers/business_connection.js';
+import inlineQueryHandler from '../tgcloud/handlers/inline_query.js';
 
-const ALLOWED_UPDATES = ['message', 'business_connection', 'business_message', 'callback_query'];
+const ALLOWED_UPDATES = ['message', 'business_connection', 'business_message', 'callback_query', 'inline_query'];
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 function lanAddress() {
@@ -100,6 +101,9 @@ function dispatch(update) {
   } else if (update.callback_query) {
     noteUpdate('callback_query');
     run('callback_query', () => handleDraftCallback(update.callback_query));
+  } else if (update.inline_query) {
+    noteUpdate('inline_query');
+    run('inline_query', () => inlineQueryHandler(update.inline_query));
   } else {
     noteUpdate('other');
   }

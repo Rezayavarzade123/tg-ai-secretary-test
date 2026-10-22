@@ -6,7 +6,7 @@ export const runtime = {
   lastUpdateAt: 0,
   lastError: null,
   lastErrorAt: 0,
-  counts: { message: 0, business_message: 0, business_connection: 0, callback_query: 0, other: 0 },
+  counts: { message: 0, business_message: 0, business_connection: 0, callback_query: 0, inline_query: 0, other: 0 },
   bot: null,            // getMe() result
   panelUrl: '',         // includes the access token (this process only)
   panelUrlPublic: '',   // safe to store and share on the LAN

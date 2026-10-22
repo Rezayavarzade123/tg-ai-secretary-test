@@ -146,7 +146,7 @@ export async function modelSettings() {
 // mode: "bot" (you, privately) or "secretary" (someone writing to your main account)
 // remember=false regenerates an answer without touching the conversation memory
 // (used by the "Regenerate" button on a draft).
-export async function respond({ scope, userText, mode, remember = true, chatId = null, lang = null }) {
+export async function respond({ scope, userText, mode, remember = true, chatId = null, lang = null, timeoutMs }) {
   const { provider, baseUrl, apiKey, model } = await modelSettings();
   if (provider === 'cloud' && !apiKey) {
     throw new Error('No cloud API key saved. Send /setkey <key>, or set the brain to "local" in the control panel.');
@@ -164,6 +164,8 @@ export async function respond({ scope, userText, mode, remember = true, chatId =
     maxTokens: mode === 'secretary' ? NUM_PREDICT_SECRETARY : NUM_PREDICT_BOT,
     // A secretary talking to strangers should not be creative.
     temperature: mode === 'secretary' ? 0.3 : 0.6,
+    // Inline queries need an answer before Telegram gives up on them.
+    ...(timeoutMs ? { timeoutMs } : {}),
   });
 
   // Recorded even when the reply is empty: a slow empty reply is still information.

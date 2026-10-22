@@ -641,6 +641,13 @@ function viewSetup() {
       </div>
       <div class="row" style="justify-content:space-between;margin-bottom:6px">
         <div>
+          <div>Inline mode (@name in any chat)</div>
+          <div class="small muted">Type @${esc(st.bot?.username || 'me')} and a question in any chat, including groups I am not in. Nothing is sent until you pick the answer. Owner only: the prompt contains your notes.</div>
+        </div>
+        ${toggle('inlineSw', (s.inline_mode || 'owner') !== 'off', 'Answer @mentions in any chat')}
+      </div>
+      <div class="row" style="justify-content:space-between;margin-bottom:6px">
+        <div>
           <div>Answer in group chats</div>
           <div class="small muted">Only when someone mentions me or replies to me. Commands still only work in private. Secretary mode never covers groups.</div>
         </div>
@@ -843,6 +850,9 @@ function wire() {
 
   bindToggle('langAuto', (on) => saveSettings({ lang_auto: on ? 'on' : 'off' }, `Language following ${on ? 'on' : 'off'}`));
   bindToggle('notifySw', (on) => saveSettings({ notify: on ? 'on' : 'off' }, `Notifications ${on ? 'on' : 'off'}`));
+  bindToggle('inlineSw', (on) => saveSettings({ inline_mode: on ? 'owner' : 'off' }, on
+    ? 'Inline mode on — type @me in any chat'
+    : 'Inline mode off'));
   bindToggle('groupSw', (on) => saveSettings({ group_mode: on ? 'on' : 'off' }, on
     ? 'I will answer in groups when mentioned'
     : 'I will stay silent in groups'));

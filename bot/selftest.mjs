@@ -28,6 +28,7 @@ const sent = [];
 const edited = [];
 const modelRequests = [];
 const answered = [];
+const inlineAnswers = [];   // answerInlineQuery payloads
 let messageId = 900;
 
 function tg(result) {
@@ -58,6 +59,7 @@ globalThis.fetch = async (url, options = {}) => {
     }
     if (method === 'editMessageText') { edited.push(body); return tg(true); }
     if (method === 'answerCallbackQuery') { answered.push(body); return tg(true); }
+    if (method === 'answerInlineQuery') { inlineAnswers.push(body); return tg(true); }
     return tg(true);
   }
 
@@ -103,6 +105,7 @@ const { handleDraftCallback, listDrafts, getDraft } = await import('../tgcloud/l
 const { runtime } = await import('./runtime.mjs');
 const { guardOutgoing } = await import('../tgcloud/lib/guard.js');
 const { detectLang } = await import('../tgcloud/lib/lang.js');
+const { default: inlineQuery, resetInlineState } = await import('../tgcloud/handlers/inline_query.js');
 
 // What runner.mjs does at start-up after getMe().
 runtime.bot = { id: 42, username: 'selftest_bot', first_name: 'Secretary' };
@@ -333,6 +336,49 @@ await check('context and a fixed language for one contact reach the prompt and t
   const draft = all.find((d) => d.chatId === 6006);
   assert.ok(draft, 'a draft was created');
   assert.equal(draft.lang, 'fa', 'the safety net uses the contact language too');
+});
+
+await check('inline mode answers the owner only, and once per burst', async () => {
+  resetInlineState();
+  inlineAnswers.length = 0;
+
+  // A stranger typing @bot gets nothing: no results, no model call, no notes.
+  const modelsBefore = modelRequests.length;
+  await inlineQuery({ id: 'q-stranger', from: { id: 999999 }, query: 'what are his plans?' }, { debounceMs: 0 });
+  assert.equal(inlineAnswers.length, 1);
+  assert.deepEqual(inlineAnswers[0].results, [], 'a stranger gets no results');
+  assert.ok(inlineAnswers[0].switch_pm_text, 'and a button to private chat instead');
+  assert.equal(modelRequests.length, modelsBefore, 'and costs no model call');
+
+  // The owner typing: answered immediately with a placeholder, then for real.
+  inlineAnswers.length = 0;
+  await inlineQuery({ id: 'q-1', from: { id: OWNER }, query: 'are we still on for thursday' }, { debounceMs: 10 });
+  assert.equal(inlineAnswers[0].results[0].id, 'thinking', 'the first answer is a placeholder');
+  assert.equal(inlineAnswers[0].results[0].input_message_content.message_text.length > 0, true);
+
+  await new Promise((r) => setTimeout(r, 150));
+  const real = inlineAnswers.at(-1).results[0];
+  assert.equal(real.id, 'answer', 'then the real answer replaces it');
+  assert.match(real.input_message_content.message_text, /automated assistant/);
+  assert.ok(!JSON.stringify(inlineAnswers).includes('secret note'), 'and no private note leaks');
+
+  // Typing five more characters must not mean five model calls: the burst is
+  // debounced down to the last query.
+  const before = modelRequests.length;
+  inlineAnswers.length = 0;
+  for (const q of ['are we still', 'are we still o', 'are we still on', 'are we still on for']) {
+    await inlineQuery({ id: `burst-${q.length}`, from: { id: OWNER }, query: q }, { debounceMs: 30 });
+  }
+  await new Promise((r) => setTimeout(r, 250));
+  assert.equal(modelRequests.length - before, 1, 'one model call for the whole burst');
+
+  // /inline off means silence, even for the owner.
+  await setSetting('inline_mode', 'off');
+  inlineAnswers.length = 0;
+  await inlineQuery({ id: 'q-off', from: { id: OWNER }, query: 'hello there' }, { debounceMs: 5 });
+  assert.deepEqual(inlineAnswers[0].results, [], 'off means no results at all');
+  await setSetting('inline_mode', 'owner');
+  resetInlineState();
 });
 
 await check('in a group the bot answers only when it is addressed', async () => {

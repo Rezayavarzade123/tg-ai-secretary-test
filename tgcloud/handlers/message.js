@@ -45,6 +45,7 @@ Safety
 /pause <hours>  stay quiet in a chat after you reply there yourself
 /notify on|off  copy every secretary reply to me
 /groups on|off  answer in group chats when someone mentions me (bot mode only)
+/inline on|off  answer when you type @me in any chat, including groups
 /mute <chat_id>, /unmute <chat_id>  per-chat switch
 
 System prompts
@@ -201,6 +202,28 @@ async function runCommand(chatId, message, { cmd, arg }) {
       }
       await setSetting('model', arg);
       await say(chatId, `Model set to ${arg}.`);
+      return;
+    }
+
+    case 'inline': {
+      const cur = await getSetting('inline_mode', 'owner');
+      const handle = (await botIdentity()).username || 'me';
+      if (!arg) {
+        await say(chatId,
+          `Inline mode: ${cur === 'off' ? 'OFF' : 'ON (you only)'}\n\n` +
+          `When it is on, type @${handle} followed by a question in any chat — ` +
+          'a group I am not in, a channel, a chat with someone else — and my answer appears in the result list. ' +
+          'Nothing is sent until you pick it.\n\n' +
+          'It is limited to you because my prompt contains your private notes.\n\n' +
+          '/inline on    turn it on\n/inline off   turn it off');
+        return;
+      }
+      const v = arg.toLowerCase();
+      if (!['on', 'off'].includes(v)) { await say(chatId, 'Usage: /inline on|off'); return; }
+      await setSetting('inline_mode', v === 'on' ? 'owner' : 'off');
+      await say(chatId, v === 'on'
+        ? `Inline mode on: type @${handle} and a question in any chat.`
+        : 'Inline mode off: typing my @name will show no results.');
       return;
     }
 

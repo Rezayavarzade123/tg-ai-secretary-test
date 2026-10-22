@@ -367,6 +367,11 @@ function validateSetting(key, rawValue) {
     case 'secretary':
       if (!['on', 'off'].includes(value)) throw bad('secretary must be on or off');
       return value;
+    case 'inline_mode':
+      // "owner" = the owner can use @bot in any chat; anyone else gets nothing.
+      // There is no public mode on purpose: the bot prompt holds private notes.
+      if (!['owner', 'off'].includes(value)) throw bad('inline_mode must be owner or off');
+      return value;
     case 'group_mode':
       // "on" means the bot answers in groups when it is addressed, and only then.
       if (!['on', 'off'].includes(value)) throw bad('group_mode must be on or off');

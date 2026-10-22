@@ -34,6 +34,8 @@ for (const [key, value] of Object.entries({
   secretary_info: 'Travelling until Friday. For urgent things call my office. Replies may take a day.',
   secretary_conns: '["demo-connection"]',
   quiet_start: '22',
+  inline_mode: 'owner',
+  group_mode: 'on',
   quiet_end: '8',
   timezone: 'Europe/London',
   probe_last: JSON.stringify({

@@ -25,7 +25,7 @@
     "deploy": "tgcloud push",
     "status": "tgcloud status",
     "migrate": "tgcloud migrate",
-    "test": "node --import ./tests/register.mjs --test tests/text.test.mjs tests/pending.test.mjs tests/prompt.test.mjs tests/typing.test.mjs tests/lang.test.mjs tests/guard.test.mjs tests/local-db.test.mjs tests/panel-settings.test.mjs tests/features.test.mjs tests/panel-ui.test.mjs tests/hardware.test.mjs tests/panel-render.test.mjs tests/groups.test.mjs",
+    "test": "node --import ./tests/register.mjs --test tests/text.test.mjs tests/pending.test.mjs tests/prompt.test.mjs tests/typing.test.mjs tests/lang.test.mjs tests/guard.test.mjs tests/local-db.test.mjs tests/panel-settings.test.mjs tests/features.test.mjs tests/panel-ui.test.mjs tests/hardware.test.mjs tests/panel-render.test.mjs tests/groups.test.mjs tests/inline.test.mjs",
     "hw": "node bot/hardware.mjs"
   },
   "devDependencies": {
