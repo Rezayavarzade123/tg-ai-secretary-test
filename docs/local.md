@@ -135,6 +135,15 @@ chmod 600 bot/.env
 npm start
 ```
 
+`./install.sh` also links `tg-secretary` onto your `PATH`, which is the short way to do
+everything below:
+
+```bash
+tg-secretary status      # service, panel and model server in one look
+tg-secretary panel       # the URL with the token
+tg-secretary start --fg  # run it in this terminal
+```
+
 First run prints the panel URL and its access token. Two things to do immediately:
 
 1. **Send `/claim`** to the bot in Telegram. Until an owner exists, the bot ignores
