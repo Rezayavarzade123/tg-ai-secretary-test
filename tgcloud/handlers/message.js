@@ -1,13 +1,17 @@
 import { api, db } from 'sdk';
 import { eq, asc } from 'sdk/db';
 import { notes } from '../schema.js';
-import { OWNER_ID, DEFAULT_MODEL, DEFAULT_PAUSE_HOURS, DEFAULT_REPLY_DELAY, MAX_REPLY_DELAY, MAX_PROMPT_CHARS, MAX_PROMPT_FILE_BYTES } from '../lib/config.js';
+import { DEFAULT_MODEL, LOCAL_LLM_URL, DEFAULT_PAUSE_HOURS, DEFAULT_REPLY_DELAY, DEFAULT_SECRETARY_MODE, DEFAULT_LANG, MAX_REPLY_DELAY, MAX_PROMPT_CHARS, MAX_PROMPT_FILE_BYTES } from '../lib/config.js';
 import { canSleep, sleep } from '../lib/wait.js';
 import { parseCommand, displayName, errMsg, decodeUtf8 } from '../lib/text.js';
 import { say, withTyping } from '../lib/telegram.js';
 import { getSetting, setSetting, delSetting } from '../lib/settings.js';
 import { respond, resetHistory, defaultPrompt } from '../lib/brain.js';
+import { health } from '../lib/llm.js';
+import { countPendingDrafts } from '../lib/drafts.js';
 import { setMuted } from '../lib/secretary.js';
+import { isOwner, ownerId } from '../lib/owner.js';
+import { LANGUAGES, isLanguage, language, languagePromptName } from '../lib/lang.js';
 
 const HELP = `Your assistant is ready. Just write to me normally, or use:
 
@@ -18,7 +22,8 @@ This private chat
 /reset  clear our conversation memory
 
 Secretary mode (I answer people who message your main account)
-/secretary on|off  switch it on or off
+/mode draft|auto|off  draft = you approve each reply, auto = send it, off = never
+/secretary on|off  master switch for secretary mode
 /secretaryinfo <text>  what I may tell people (hours, how to reach you...)
 /delay <seconds>  wait after a person's last message before answering (0 = off)
 /pause <hours>  stay quiet in a chat after you reply there yourself
@@ -30,8 +35,13 @@ System prompts
   "bot" = how I talk with you here, "secretary" = how I answer people on your account.
   Long prompts: send a .txt file with the caption /prompt secretary
 
+Language
+/lang  show the reply language
+/lang <code>  e.g. /lang en, /lang fa  (I reply in this language)
+/lang auto on|off  follow whoever writes (on) or always use the language above (off)
+
 Setup
-/setkey <ollama key>  save your Ollama API key
+/panel  how to open the control panel (model, secrets, prompts, drafts)
 /model [name]  show or change the model
 /waittest [seconds]  check that long waits work on this platform
 /status  show current settings
@@ -46,22 +56,32 @@ export default async function (message) {
   // A command may also be the caption of an uploaded file (used by /prompt <mode> + .txt file).
   const parsed = parseCommand(text || message.caption || '');
 
-  // /id works for anyone: it's how you find the number to put in config.js
+  // /id works for anyone: it's how you find your numeric Telegram ID.
   if (parsed?.cmd === 'id') {
     await say(chatId, `Your Telegram user ID is ${fromId}`);
     return;
   }
 
   // Setup mode: no owner configured yet.
-  if (OWNER_ID === 0) {
+  if ((await ownerId()) === 0) {
+    if (parsed?.cmd === 'claim') {
+      await setSetting('owner_id', String(fromId));
+      await setSetting('owner_name', displayName(message.from));
+      await say(chatId,
+        `✅ You are now the owner (${fromId}).\n` +
+        `Everything else is configured in the control panel — send /panel for the address.\n` +
+        `Write to me normally to chat; open Settings > Account > Chat Automation and add me there to enable secretary mode.`);
+      return;
+    }
     await say(chatId,
       `Setup mode. Your Telegram user ID is ${fromId}.\n` +
-      `Put it in tgcloud/lib/config.js as OWNER_ID, run "npx tgcloud push", then message me again.`);
+      `Send /claim to make yourself the owner.\n` +
+      `(On a serverless deployment you can also put this number in tgcloud/lib/config.js as OWNER_ID and push.)`);
     return;
   }
 
-  // Everybody else is ignored silently (no free Ollama usage for strangers).
-  if (fromId !== OWNER_ID) return;
+  // Everybody else is ignored silently (no free model usage for strangers).
+  if (!(await isOwner(fromId))) return;
 
   // Remember your name for the system prompts.
   const name = displayName(message.from);
@@ -95,7 +115,8 @@ async function runCommand(chatId, message, { cmd, arg }) {
       return;
 
     case 'setkey': {
-      if (!arg) { await say(chatId, 'Usage: /setkey <your Ollama API key>'); return; }
+      // Only used when the brain is the hosted Ollama API. A local model needs no key.
+      if (!arg) { await say(chatId, 'Usage: /setkey <your Ollama API key> (only needed for the cloud brain)'); return; }
       await setSetting('ollama_key', arg);
       try {
         await api.deleteMessage({ chat_id: chatId, message_id: message.message_id });
@@ -111,6 +132,73 @@ async function runCommand(chatId, message, { cmd, arg }) {
       }
       await setSetting('model', arg);
       await say(chatId, `Model set to ${arg}.`);
+      return;
+    }
+
+    case 'claim': {
+      await say(chatId, `You are already the owner (${await ownerId()}). Nothing to claim.`);
+      return;
+    }
+
+    case 'lang': {
+      const cur = await getSetting('lang', DEFAULT_LANG);
+      const auto = (await getSetting('lang_auto', 'on')) !== 'off';
+      const list = LANGUAGES.map((l) => `${l.code} — ${l.native}`).join('\n');
+      if (!arg) {
+        await say(chatId,
+          `Reply language: ${languagePromptName(cur)} (${cur})\n` +
+          `Follow the person's language: ${auto ? 'ON' : 'OFF'}\n\n` +
+          `Commands:\n/lang <code>  always use this language\n/lang auto on|off  follow whoever writes\n\n` +
+          `Available codes:\n${list}`);
+        return;
+      }
+      const parts = arg.toLowerCase().split(/\s+/);
+      if (parts[0] === 'auto') {
+        const v = parts[1];
+        if (v !== 'on' && v !== 'off') { await say(chatId, 'Usage: /lang auto on|off'); return; }
+        await setSetting('lang_auto', v);
+        await say(chatId, v === 'on'
+          ? 'I will reply in whatever language the person writes in.'
+          : `I will always reply in ${languagePromptName(await getSetting('lang', DEFAULT_LANG))}.`);
+        return;
+      }
+      if (!isLanguage(parts[0])) {
+        await say(chatId, `Unknown language "${parts[0]}". Use one of: ${LANGUAGES.map((l) => l.code).join(', ')}`);
+        return;
+      }
+      await setSetting('lang', parts[0]);
+      const lang = language(parts[0]);
+      await say(chatId, `✅ Reply language set to ${lang.label} (${lang.native}).\nUse /lang auto on if I should follow each person instead.`);
+      return;
+    }
+
+    case 'mode': {
+      const cur = await getSetting('secretary_mode', DEFAULT_SECRETARY_MODE);
+      const v = arg.toLowerCase();
+      if (!['draft', 'auto', 'off'].includes(v)) {
+        await say(chatId,
+          `Secretary replies are currently: ${cur.toUpperCase()}\n\n` +
+          `/mode draft  show me each reply before it is sent (recommended with a small local model)\n` +
+          `/mode auto   send it after the safety checks\n` +
+          `/mode off    never answer on my account`);
+        return;
+      }
+      await setSetting('secretary_mode', v);
+      await setSetting('secretary', v === 'off' ? 'off' : 'on');
+      await say(chatId, v === 'draft'
+        ? '✅ Draft mode: I will send each suggested reply to you for approval before it reaches anyone.'
+        : v === 'auto'
+          ? '✅ Auto mode: I answer incoming messages myself, after checking the reply against the safety rules.'
+          : '✅ I will not answer anyone on your main account.');
+      return;
+    }
+
+    case 'panel': {
+      const url = await getSetting('panel_url', '');
+      await say(chatId,
+        (url ? `🖥 Control panel: ${url}\n\n` : '🖥 The control panel runs next to the bot (bot/panel).\n\n') +
+        `It is where you set the model server, the language, the prompts, secretary mode and the drafts.\n` +
+        `It is meant for your own network only — never expose it to the internet.`);
       return;
     }
 
@@ -304,13 +392,33 @@ async function runCommand(chatId, message, { cmd, arg }) {
     }
 
     case 'status': {
-      const key = (await getSetting('ollama_key')) ? 'saved' : 'MISSING (use /setkey)';
+      const provider = await getSetting('llm_provider', 'local');
+      const baseUrl = await getSetting('llm_base_url', LOCAL_LLM_URL);
+      const cloudKey = (await getSetting('llm_api_key')) ?? (await getSetting('ollama_key'));
+      const key = provider === 'cloud' ? (cloudKey ? 'saved' : 'MISSING (use /setkey)') : 'not needed (local)';
       const conns = JSON.parse(await getSetting('secretary_conns', '[]')).length;
+      const mode = await getSetting('secretary_mode', DEFAULT_SECRETARY_MODE);
+      const lang = await getSetting('lang', DEFAULT_LANG);
+      const auto = (await getSetting('lang_auto', 'on')) !== 'off';
+      const drafts = await countPendingDrafts();
+      let brain = '';
+      try {
+        const h = await health({ baseUrl });
+        brain = h.ok
+          ? `Model server: online (${h.ms} ms)${h.models?.length ? ' — ' + h.models.join(', ') : ''}`
+          : `Model server: OFFLINE — ${h.error}`;
+      } catch (e) {
+        brain = 'Model server: unknown (' + errMsg(e) + ')';
+      }
       await say(chatId,
+        `Brain: ${provider} at ${provider === 'cloud' ? 'ollama.com' : baseUrl}\n` +
         `Model: ${await getSetting('model', DEFAULT_MODEL)}\n` +
-        `Ollama key: ${key}\n` +
-        `Secretary mode: ${(await getSetting('secretary', 'on')).toUpperCase()}\n` +
+        `${brain}\n` +
+        `API key: ${key}\n` +
+        `Secretary mode: ${(await getSetting('secretary', 'on')).toUpperCase()} (${mode})\n` +
         `Connected accounts: ${conns}${conns ? '' : '  (connect me in Telegram Settings > Account > Chat Automation)'}\n` +
+        `Language: ${languagePromptName(lang)}${auto ? ', following the person' : ', fixed'}\n` +
+        `Drafts waiting for you: ${drafts}\n` +
         `Reply delay: ${await getSetting('delay_seconds', String(DEFAULT_REPLY_DELAY))} s${canSleep ? '' : ' (timers unavailable, ignored)'}\n` +
         `Pause after your manual reply: ${await getSetting('pause_hours', String(DEFAULT_PAUSE_HOURS))} h\n` +
         `Copy secretary replies to me: ${(await getSetting('notify', 'on')).toUpperCase()}`);

@@ -1,16 +1,23 @@
 {
   "name": "tg-ai-secretary",
-  "version": "1.0.0",
-  "description": "A serverless Telegram AI assistant and secretary, powered by Ollama's hosted API, running on Telegram Serverless.",
+  "version": "1.1.0",
+  "description": "A Telegram AI assistant and secretary that runs on your own machine with a small local model, or serverless with Ollama's hosted API.",
   "license": "MIT",
   "private": true,
   "type": "module",
-  "keywords": ["telegram", "telegram-bot", "serverless", "ollama", "ai-assistant", "secretary"],
+  "keywords": ["telegram", "telegram-bot", "secretary", "local-llm", "llama.cpp", "ollama", "ai-assistant"],
+  "engines": {
+    "node": ">=18"
+  },
   "scripts": {
+    "start": "node --import ./bot/register.mjs bot/runner.mjs",
+    "dev": "node --watch --import ./bot/register.mjs bot/runner.mjs",
+    "selftest": "node --import ./bot/register.mjs bot/selftest.mjs",
+    "demo": "node --import ./bot/register.mjs bot/seed-demo.mjs",
     "deploy": "tgcloud push",
     "status": "tgcloud status",
     "migrate": "tgcloud migrate",
-    "test": "node --import ./tests/register.mjs --test tests/text.test.mjs tests/pending.test.mjs tests/prompt.test.mjs tests/typing.test.mjs"
+    "test": "node --import ./tests/register.mjs --test tests/text.test.mjs tests/pending.test.mjs tests/prompt.test.mjs tests/typing.test.mjs tests/lang.test.mjs tests/guard.test.mjs tests/local-db.test.mjs"
   },
   "devDependencies": {
     "@tgcloud/cli": ">=0.2.0"
