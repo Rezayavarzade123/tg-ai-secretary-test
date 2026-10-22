@@ -1,17 +1,3 @@
-# Secretary Bot
-
-A Telegram assistant that answers for you when you can't — **on your own machine, with a small local model**, or serverless with a hosted one.
-
-It has two jobs. In **bot mode** it is your private assistant: notes, memory, questions. In **secretary mode** it is connected to your Telegram account, and when someone messages you it answers *as your disclosed AI secretary*: as a draft you approve, or automatically once it has proven it can be trusted.
-
-Built for the case where the brain is a 1–2B model on a CPU. Everything below exists because of that: drafts by default, deterministic safety instead of prompt hopes, and a hard budget on latency.
-
-```bash
-git clone https://github.com/ygasaino1/tg-ai-secretary.git
-cd tg-ai-secretary && npm start
-```
-
----
 
 ## Contents
 
