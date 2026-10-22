@@ -1052,6 +1052,15 @@ setInterval(() => {
   refresh();
 }, 5000);
 
+// A demo panel says so, everywhere it is visible: nobody should think they are
+// looking at their own data, and nobody should think this build is unprotected by
+// accident.
+function markDemo() {
+  const sub = $('#brandSub');
+  if (sub && !sub.textContent.includes('demo')) sub.textContent = 'demo · sample data, no password';
+  document.title = 'Secretary — demo panel';
+}
+
 async function signIn(token) {
   const body = await api('/api/login', {
     method: 'POST',
@@ -1073,23 +1082,33 @@ async function signIn(token) {
   try {
     fromUrl = new URL(location.href).searchParams.get('token') || '';
     if (fromUrl) history.replaceState(null, '', location.pathname + location.hash);
-  } catch { /* no URL API: the header and cookie paths still work */ }
+  } catch { /* no URL API: the header path still works */ }
   if (fromUrl) saveToken(fromUrl.trim());
 
   try {
     const ping = await api('/api/ping');
-    if (!ping.needsAuth) { await refresh({ quiet: false }); return; }
 
-    // A demo instance (sample data, no bot token) signs itself in: there is
-    // nothing to protect, and a login wall in front of the sample data just looks
-    // like a broken panel.
-    if (ping.demo && ping.demoToken) {
+    // A demo instance (sample data, no bot token) is open by design: the token is
+    // in the README, so a login wall in front of it protects nothing and only
+    // gives a proxy something to break. Take the token from the ping — never
+    // through a login request, which is the one thing an embedded pane was seen
+    // to mangle — and label the page so nobody mistakes it for their own data.
+    if (ping.demo) {
+      markDemo();
+      if (ping.demoToken) {
+        saveToken(ping.demoToken);
+        if ($('#tokenInput')) $('#tokenInput').value = ping.demoToken;
+      }
+    }
+
+    // Nothing else to do: the session is already good (cookie, header, or a demo
+    // instance that needs neither).
+    if (!ping.needsAuth) {
       try {
-        await signIn(ping.demoToken);
-        toast('Demo panel — signed in automatically');
+        await refresh({ quiet: false });
         return;
       } catch (e) {
-        $('#loginErr').textContent = e.message;
+        if (!ping.demo) throw e;
       }
     }
 
@@ -1097,8 +1116,7 @@ async function signIn(token) {
     if (hint) {
       hint.innerHTML = ping.demo
         ? `This is the <strong>demo</strong> panel. The token is <code>${esc(ping.demoToken || 'demo')}</code>.`
-        : 'The token is printed by the bot when it starts, and stored in <code>bot/state/panel-token</code>. On a real instance you can also open the panel with <code>?token=…</code>.';
-      if (ping.demo && ping.demoToken) $('#tokenInput').value = ping.demoToken;
+        : 'The token is printed by the bot when it starts, and stored in <code>bot/state/panel-token</code>. You can also open the panel with <code>?token=…</code>.';
     }
     showLogin(true);
   } catch (e) {

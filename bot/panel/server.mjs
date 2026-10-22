@@ -114,6 +114,12 @@ function sameSecret(a, b) {
 }
 
 function authed(req, url) {
+  // A demo instance is sample data with a published token, so it is open. This is
+  // also the only form of authentication that cannot be broken by anything between
+  // the browser and this process: an embedded preview pane was observed sending a
+  // login POST with no body and no headers, which no amount of client-side care can
+  // fix. There is nothing here worth a password.
+  if (DEMO) return true;
   if (!ACCESS_TOKEN) return true;
   const header = req.headers.authorization || '';
   if (header.startsWith('Bearer ') && sameSecret(header.slice(7).trim(), ACCESS_TOKEN)) return true;
@@ -823,6 +829,14 @@ export async function startPanel({ port = 8787, host = '0.0.0.0', lanAddress = '
 
   const server = http.createServer((req, res) => {
     const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
+
+    // Demo instances write one line per request. If a panel ever "does nothing"
+    // again, this says whether the browser asked for the page, the script or an
+    // API route — and whether a login POST even arrived.
+    if (DEMO) {
+      const who = req.headers['x-forwarded-for'] || req.socket?.remoteAddress || '?';
+      log('info', `panel: ${req.method} ${url.pathname} from ${who}`);
+    }
 
     if (url.pathname.startsWith('/api/')) {
       maybeSetCookie(url, res);

@@ -636,9 +636,15 @@ await check('a demo panel signs itself in, a real one never does', async () => {
   const demoPing = await (await realFetch(`${demoBase}/api/ping`)).json();
   assert.equal(demoPing.demo, true);
   assert.equal(demoPing.demoToken, 'selftest-token', 'a demo instance hands the page its token');
-  assert.equal(demoPing.needsAuth, true, 'it still requires the token: the page signs in with it');
+  assert.equal(demoPing.needsAuth, false, 'and needs nothing else: sample data is not worth a password');
+
+  // The point of the bypass: a client that cannot send a body, a header or a
+  // cookie still gets in. That is the situation an embedded preview pane created.
+  const bare = await realFetch(`${demoBase}/api/state`);
+  assert.equal(bare.status, 200, 'a demo instance answers an anonymous GET');
+
   const auto = await realFetch(`${demoBase}/api/state`, { headers: { Authorization: `Bearer ${demoPing.demoToken}` } });
-  assert.equal(auto.status, 200, 'and that token works');
+  assert.equal(auto.status, 200, 'and a token works too');
   await new Promise((resolve) => demo.close(resolve));
 
   const real = await startPanel({ port: 0, host: '127.0.0.1', lanAddress: '127.0.0.1', demo: false });
@@ -646,7 +652,10 @@ await check('a demo panel signs itself in, a real one never does', async () => {
   const realPing = await (await realFetch(`${realBase}/api/ping`)).json();
   assert.equal(realPing.demo, false);
   assert.equal(realPing.demoToken, undefined, 'a real instance never hands out its token');
+  assert.equal(realPing.needsAuth, true, 'and it still demands one');
   assert.ok(!JSON.stringify(realPing).includes('selftest-token'));
+  const realBare = await realFetch(`${realBase}/api/state`);
+  assert.equal(realBare.status, 401, 'an anonymous read of a real panel is refused');
   await new Promise((resolve) => real.close(resolve));
 });
 

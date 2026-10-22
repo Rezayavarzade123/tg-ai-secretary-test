@@ -157,7 +157,7 @@ BOT_STATE_DIR=./bot/state-demo PANEL_TOKEN=demo npm start
 ### Tests
 
 ```bash
-npm test          # 84 unit tests: text, prompts, delay, typing, language, guards, local db,
+npm test          # 86 unit tests: text, prompts, delay, typing, language, guards, local db,
                   # panel settings, v1.2 features, machine detection, and static checks
                   # on the panel's own front end
 npm run selftest  # 31 end-to-end checks with fake Telegram + fake model
