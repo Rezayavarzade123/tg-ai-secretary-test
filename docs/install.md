@@ -1,5 +1,9 @@
 # Installing
 
+> **On Windows, use [`install.ps1`](windows.md)** — `install.sh` is bash, and it now says
+> so instead of half-installing. Everything below is the Linux path; the two installers
+> take the same decisions with the platform's own tools.
+
 One script, one directory, one service. `install.sh` is meant to be read before it is
 run: it is ~600 lines of plain bash with no downloads other than the code itself.
 

@@ -1,0 +1,4 @@
+# cmd.exe is happiest with CRLF, and the three-line wrapper has no excuse.
+*.cmd text eol=crlf
+# Shell scripts must stay LF even on a Windows checkout, or bash refuses them.
+*.sh  text eol=lf
