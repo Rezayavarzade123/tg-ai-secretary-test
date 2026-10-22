@@ -1050,6 +1050,30 @@ await check('the installer is coherent: help works, and a dry run changes nothin
   assert.equal(fs2.existsSync(path2.join(foreign, 'bot')), false);
 });
 
+await check('the tg-secretary command reads a real install and refuses a fake one', async () => {
+  const { execFile } = await import('node:child_process');
+  const { promisify } = await import('node:util');
+  const run = promisify(execFile);
+  const path2 = await import('node:path');
+  const cli = path2.join(process.cwd(), 'bin', 'tg-secretary');
+
+  // This checkout has package.json and bot/runner.mjs, so it is an install as far
+  // as the command is concerned — which is enough to prove resolution and output.
+  const version = await run('bash', [cli, 'version']);
+  assert.match(version.stdout, /^tg-secretary \d+\.\d+\.\d+/);
+
+  const paths = await run('bash', [cli, 'paths']);
+  assert.match(paths.stdout, new RegExp(`install\\s+${process.cwd().replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`));
+
+  let refused = false;
+  try {
+    await run('bash', [cli, '--dir', '/nope/not-an-install', 'status']);
+  } catch (e) {
+    refused = /No installation at/.test(`${e.stdout ?? ''}${e.stderr ?? ''}`);
+  }
+  assert.ok(refused, 'a path that is not an install must be refused by name');
+});
+
 const failed = results.filter((r) => !r.ok);
 console.log('──────────────────────────────────────────');
 console.log(`${results.length - failed.length}/${results.length} checks passed`);

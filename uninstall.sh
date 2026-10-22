@@ -13,6 +13,7 @@ IFS=$'\n\t'
 SERVICE_NAME="secretary"
 LLAMA_SERVICE="llama-server"
 PURGE=false
+REMOVE_LINK=true
 ASSUME_YES=false
 DRY_RUN=false
 INSTALL_DIR=""
@@ -47,6 +48,7 @@ Usage: bash uninstall.sh [--dir PATH] [--purge] [--yes] [--dry-run]
 
   --dir PATH    the install directory (same one you gave install.sh)
   --purge       also delete the code, the settings file and your messages
+  --no-link     leave the tg-secretary command in place
   --yes, -y     never ask
   --dry-run     show what would be removed
   --help, -h    this text
@@ -59,6 +61,7 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --dir)     [ -n "${2:-}" ] || die "--dir needs a value"; INSTALL_DIR=$2; shift 2 ;;
     --purge)   PURGE=true; shift ;;
+    --no-link) REMOVE_LINK=false; shift ;;
     --yes|-y)  ASSUME_YES=true; shift ;;
     --dry-run) DRY_RUN=true; ASSUME_YES=true; shift ;;
     --help|-h) usage; exit 0 ;;
@@ -147,6 +150,21 @@ if ! $DRY_RUN && have systemctl; then
   if $IS_ROOT; then systemctl daemon-reload >/dev/null 2>&1 || true; else systemctl --user daemon-reload >/dev/null 2>&1 || true; fi
 fi
 if [ "$removed" -eq 0 ]; then info "No service installed by this project was found."; fi
+
+# The `tg-secretary` command lives outside the install directory, so it survives a
+# non-purge run and would then point at a directory that is gone. Remove it only
+# when it points into this install.
+step "The tg-secretary command"
+for link in /usr/local/bin/tg-secretary "$HOME/.local/bin/tg-secretary"; do
+  [ -L "$link" ] || continue
+  target=$(readlink -f "$link" 2>/dev/null || true)
+  case "$target" in
+    "$INSTALL_DIR"/*)
+      if $REMOVE_LINK; then run rm -f "$link"; ok "removed $link"; else info "left $link (--no-link)"; fi
+      ;;
+    *) info "left $link (it points at $target, not this install)" ;;
+  esac
+done
 
 if ! $PURGE; then
   step "Done — your data is still there"

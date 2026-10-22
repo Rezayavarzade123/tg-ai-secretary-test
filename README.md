@@ -21,6 +21,7 @@ cd tg-ai-secretary && npm start
 - [The safety model](#the-safety-model)
 - [Features](#features)
 - [Install](#install)
+- [The `tg-secretary` command](#the-tg-secretary-command)
 - [Quick start](#quick-start)
 - [The model, and the machine it runs on](#the-model-and-the-machine-it-runs-on)
 - [The control panel](#the-control-panel)
@@ -170,6 +171,21 @@ bash uninstall.sh --dir /path [--purge]
 It does **not** download a model: the right GGUF depends on the CPU in the box and is a
 ~1 GB download, so it prints `npm run hw` and the exact `llama-server` line instead. All
 the flags, the upgrade path and what it leaves behind: **[docs/install.md](docs/install.md)**.
+
+## The `tg-secretary` command
+
+The installer puts this on your `PATH`:
+
+```bash
+tg-secretary status      # running? which version, which port, is the model server up?
+tg-secretary panel       # prints the panel URL with its token
+tg-secretary logs -f
+tg-secretary update      # what is on GitHub — then: tg-secretary update apply
+tg-secretary restart
+```
+
+It follows its own symlink to find the install, so it works from any directory and keeps
+working after an update. Full command list: [docs/install.md](docs/install.md).
 
 ## Quick start
 
@@ -333,6 +349,7 @@ tg-ai-secretary/
 │     ├─ lang.js                  language registry and detection
 │     ├─ update-bridge.js        lets the handlers reach the local updater
 │     └─ config.js, pending.js, secretary.js, owner.js, activity.js, text.js
+├─ bin/tg-secretary            the command: status, panel, start/stop, logs, update
 ├─ install.sh                  the installer: checks, copies, writes settings, service
 ├─ uninstall.sh                stop the service; --purge also deletes your data
 ├─ tests/                      20 files, run against a fake sdk
@@ -346,14 +363,14 @@ tg-ai-secretary/
 ## Tests
 
 ```bash
-npm test            # 139 unit tests
-npm run selftest    # 36 end-to-end checks (fake Telegram + fake model)
+npm test            # 151 unit tests
+npm run selftest    # 37 end-to-end checks (fake Telegram + fake model)
 npm run hw          # machine report
 ```
 
 What the numbers cover:
 
-- **unit** — text handling, prompts, reply delay, typing indicator, language detection, the guard, the local query builder, panel settings validation, the v1.2 features (contacts, quiet hours, probe, metrics), machine detection, group addressing, inline payloads, the learning filter, the updater's policy (modes, refusal conditions, parsing a behind/ahead count) and its real-git paths against two temporary repositories — fast-forward, rollback, a dirty tree, a diverged branch — static checks on the panel's own front end (every wired id must exist, every tab must render, the session must survive a cookie-less proxy), and 15 tests that run the installer for real — a dry run that changes nothing, a refused foreign directory, a real install whose panel answers, an upgrade that keeps settings and messages, and a purge that removes them.
+- **unit** — text handling, prompts, reply delay, typing indicator, language detection, the guard, the local query builder, panel settings validation, the v1.2 features (contacts, quiet hours, probe, metrics), machine detection, group addressing, inline payloads, the learning filter, the updater's policy (modes, refusal conditions, parsing a behind/ahead count) and its real-git paths against two temporary repositories — fast-forward, rollback, a dirty tree, a diverged branch — static checks on the panel's own front end (every wired id must exist, every tab must render, the session must survive a cookie-less proxy), 12 tests that drive the `tg-secretary` command (install resolution, the panel URL, honest status output, the link on `PATH`, and the refusal of a directory that is not an install), and 15 tests that run the installer for real — a dry run that changes nothing, a refused foreign directory, a real install whose panel answers, an upgrade that keeps settings and messages, and a purge that removes them.
 - **selftest** — drives real messages through the real handlers: a draft is created and approved, the guard replaces a promise, an urgent message never reaches the model, a blocked contact costs no model call, quiet hours turn an auto reply into a draft, the probe gate locks and unlocks auto, group messages are answered only when addressed, inline burst-debouncing, the learning pass refusing an instruction and a verification code, and `/update` telling the truth about status while refusing to touch a dirty checkout.
 
 ## Known limits
@@ -374,6 +391,15 @@ What the numbers cover:
 - **Serverless quirk:** the Ollama key lives in the database there, because that runtime documents no secrets store. The local runtime reads it from `bot/.env` or the panel.
 
 ## Changelog
+
+### v1.5 — a command
+
+**New**
+- **`tg-secretary`**, linked onto `PATH` by the installer: `status`, `panel`, `token`, `start`/`stop`/`restart`, `logs`, `update`, `selftest`, `hw`, `paths`, `uninstall`. It follows its own symlink to find the install and names everything it cannot do.
+- `status` checks all three things that make a bot look "broken" in one line each: the service, the panel, and the model server.
+
+**Fixed**
+- The command's first version reported "not running" while the panel answered: a bot started by hand runs with a relative script path, so matching the command line missed it. It now looks at the process's working directory, then the panel.
 
 ### v1.4 — an installer
 

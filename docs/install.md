@@ -25,6 +25,7 @@ things it deliberately did not do for you.
 | **Puts the code somewhere** | Default `/opt/tg-ai-secretary` as root, `~/tg-ai-secretary` otherwise. From a clean checkout it makes a local `git clone` and re-points `origin` at the real remote, so `/update` works in the installed copy. From a dirty checkout or a downloaded tarball it copies files instead, and says that `/update` will not work there. `bot/state/`, `bot/.env` and `node_modules` never travel. |
 | **Writes the settings** | `/etc/secretary-bot.env` as root, `<dir>/bot/.env` otherwise. Mode `0600`, outside the repository, never printed except for the panel token. |
 | **Installs a service** | A systemd unit with `Restart=always` — which is what makes `/update` restart into the new code by itself. `Nice=5`, so the bot yields to the model server. |
+| **Puts the command on PATH** | A symlink to `bin/tg-secretary` in `/usr/local/bin` (root) or `~/.local/bin`, plus the `PATH` line to add if that directory is not searched. `--no-link` skips it. |
 | **Starts it, then waits** | Polls `http://127.0.0.1:<port>/api/ping` and tells you whether it answered. If it did not, it prints the first lines of the log instead of claiming success. |
 
 It does **not** download a model. The right GGUF depends on the CPU in the box, it is a
@@ -52,6 +53,38 @@ It does **not** download a model. The right GGUF depends on the CPU in the box, 
 `--dry-run` is honest: every mutating action is printed instead of performed, and it
 stops at the first thing that would have failed. It is the fastest way to see what an
 install on *your* machine would do.
+
+## The `tg-secretary` command
+
+The installer links `bin/tg-secretary` into `/usr/local/bin` (as root) or
+`~/.local/bin`, so after an install:
+
+```bash
+tg-secretary status      # running? which version? is the model server up?
+tg-secretary panel       # the panel URL with its token, ready to paste
+tg-secretary logs -f     # follow the log
+tg-secretary restart     # after editing the settings file
+tg-secretary update      # what is on GitHub; then: tg-secretary update apply
+```
+
+The link points *into* the install, so it keeps working after `/update`, and it finds
+its own install by following the symlink — no configuration, no `cd`.
+
+| Command | What it does |
+|---|---|
+| `status` | Service state, version, panel URL, panel token, and whether the model server answers. Exits 0 even when stopped (it is a report). |
+| `panel` / `token` | The URL with the token, or the token alone |
+| `start [--fg]`, `stop`, `restart` | Start as a service, or in the foreground with `--fg`; stop sends SIGTERM first so state is saved and the lock released |
+| `logs [-f] [-n N]` | The journal when a service is installed; otherwise it says to run with `--fg` |
+| `update [check\|apply\|rollback]` | The same updater as `/update`, from a terminal |
+| `selftest`, `hw [--bench]` | The end-to-end checks, and the machine report |
+| `paths`, `version` | Where the code, settings and data live; the installed version |
+| `uninstall [--purge]` | Runs `uninstall.sh` for this install |
+
+If `~/.local/bin` is not on your `PATH`, the installer prints the exact line to add —
+it does not edit your shell files for you. Use `--no-link` to skip the command entirely,
+or point it at an unusual install with `tg-secretary --dir /path …` or
+`SECRETARY_HOME=/path tg-secretary …`.
 
 ## After it finishes
 
@@ -110,4 +143,5 @@ enables lingering so the bot survives logout.
 | `Node … is too old` | Needs 18.19+ (20 recommended). The message prints the exact command per distribution. |
 | Panel does not answer | `journalctl -u secretary -n 50` (or `journalctl --user -u secretary`). The installer prints the same log tail when the check fails. |
 | `EADDRINUSE` on the panel port | Something else owns 8787. Re-run the installer with `--port 8790`, or edit `PANEL_PORT` in the settings file and restart. |
-| You lost the panel token | `cat /path/to/install/bot/state/panel-token` — or `PANEL_TOKEN` in the settings file. |
+| You lost the panel token | `tg-secretary panel` prints the URL with it; or `cat /path/to/install/bot/state/panel-token`. |
+| `tg-secretary: command not found` | `~/.local/bin` is not on `PATH` — the installer printed the line to add. Meanwhile: `/path/to/install/bin/tg-secretary status`. |

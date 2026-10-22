@@ -71,6 +71,7 @@ LLAMA_BIN=""
 TIMEZONE_ARG=""
 PANEL_HOST_ARG=""
 FROM_SOURCE=""
+DO_LINK=yes            # put `tg-secretary` on PATH
 
 usage() {
   cat <<USAGE
@@ -90,6 +91,7 @@ Usage: bash install.sh [options]
   --llama PATH         path to llama-server    (default: found in PATH)
   --service / --no-service   install a systemd service, or don't
                              (default: yes when systemd is running)
+  --no-link            do not put the tg-secretary command on PATH
   --dry-run            print every step, change nothing
   --force              install into a non-empty directory that is not ours
   --yes, -y            never ask; take the defaults (for scripts)
@@ -119,6 +121,7 @@ while [ $# -gt 0 ]; do
     --llama)      need_value "$@"; LLAMA_BIN=$2; shift 2 ;;
     --service)    DO_SERVICE=yes; shift ;;
     --no-service) DO_SERVICE=no; shift ;;
+    --no-link)    DO_LINK=no; shift ;;
     --dry-run)    DRY_RUN=true; shift ;;
     --force)      FORCE=true; shift ;;
     --yes|-y)     ASSUME_YES=true; shift ;;
@@ -634,7 +637,57 @@ else
   say "    cd $INSTALL_DIR && $START_CMD"
 fi
 
-# --- 5. the model -------------------------------------------------------------
+# --- 5. the command -----------------------------------------------------------
+
+# `tg-secretary` is a symlink into the install, so it always runs the code that is
+# there — including after /update. Root gets /usr/local/bin; anyone else gets
+# ~/.local/bin, which is on PATH on most distributions.
+step "The tg-secretary command"
+
+LINK=""          # where the command ended up, if anywhere
+LINK_DIR=""
+if [ "$DO_LINK" = yes ]; then
+  if $IS_ROOT; then LINK_DIR=/usr/local/bin; else LINK_DIR="$HOME/.local/bin"; fi
+  LINK="$LINK_DIR/tg-secretary"
+  if $DRY_RUN; then
+    printf '  %s[dry] ln -sf %s/bin/tg-secretary %s%s\n' "$D" "$INSTALL_DIR" "$LINK" "$N"
+  else
+    mkdir -p "$LINK_DIR"
+    if ln -sf "$INSTALL_DIR/bin/tg-secretary" "$LINK"; then
+      ok "$LINK"
+    else
+      warn "Could not write to $LINK_DIR; the command is $INSTALL_DIR/bin/tg-secretary"
+      LINK=""
+    fi
+  fi
+
+  case ":$PATH:" in
+    *":$LINK_DIR:"*) ;;
+    *)
+      if [ -n "$LINK" ] || $DRY_RUN; then
+        SHELL_NAME=$(basename "${SHELL:-/bin/bash}")
+        RC="$HOME/.profile"
+        case "$SHELL_NAME" in
+          zsh)  RC="$HOME/.zshrc" ;;
+          bash) RC="$HOME/.bashrc" ;;
+          fish) RC="$HOME/.config/fish/config.fish" ;;
+        esac
+        warn "$LINK_DIR is not on your PATH, so 'tg-secretary' will not be found yet."
+        info "Add it for this shell:"
+        if [ "$SHELL_NAME" = fish ]; then
+          say "    fish_add_path $LINK_DIR"
+        else
+          say "    export PATH=\"$LINK_DIR:\$PATH\""
+        fi
+        info "or permanently, by adding that line to $RC (not done for you)."
+      fi
+      ;;
+  esac
+else
+  info "Skipped (--no-link). The command is $INSTALL_DIR/bin/tg-secretary"
+fi
+
+# --- 6. the model -------------------------------------------------------------
 
 step "Model server"
 
@@ -695,7 +748,7 @@ else
   say "  or use Ollama and set LLM_BASE_URL=http://127.0.0.1:11434/v1 in $ENV_FILE."
 fi
 
-# --- 6. does it answer? -------------------------------------------------------
+# --- 7. does it answer? -------------------------------------------------------
 
 step "Checking it runs"
 
@@ -789,6 +842,11 @@ else
   say "  panel token printed at start-up, and kept in $TOKEN_FILE"
 fi
 if [ "$DO_SERVICE" = yes ]; then say "  logs        $LOGS_CMD"; fi
+if [ -n "$LINK" ]; then
+  say "  command     tg-secretary  ($LINK)"
+else
+  say "  command     $INSTALL_DIR/bin/tg-secretary"
+fi
 say ""
 say "${B}Two things to do now${N}"
 say "  1. Send /claim to the bot in Telegram — it ignores everyone until it has an owner."
@@ -796,9 +854,12 @@ say "  2. Make sure the model server is running (above), then press \"Try the mo
 say "     in the dashboard."
 say ""
 say "${B}Later${N}"
-say "  /update in Telegram, or Setup → Updates in the panel, installs new versions."
+say "  tg-secretary status        is it running, and is the model server up"
+say "  tg-secretary panel         the panel URL with its token"
+say "  tg-secretary logs -f       follow the log"
+say "  tg-secretary update        check GitHub, then: update apply"
 say "  Re-run this script with --dir $INSTALL_DIR to upgrade."
-say "  bash uninstall.sh --dir $INSTALL_DIR keeps your data; add --purge to delete it."
+say "  tg-secretary uninstall keeps your data; add --purge to delete it."
 say ""
 if [ -n "$LLAMA_CMD" ] && [ "$DO_SERVICE" != yes ]; then
   say "  Model server:  $LLAMA_CMD"
