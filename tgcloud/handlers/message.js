@@ -1,7 +1,7 @@
 import { api, db } from 'sdk';
 import { eq, asc } from 'sdk/db';
 import { notes } from '../schema.js';
-import { DEFAULT_MODEL, LOCAL_LLM_URL, TIMEZONE, DEFAULT_PAUSE_HOURS, DEFAULT_REPLY_DELAY, DEFAULT_SECRETARY_MODE, DEFAULT_LANG, MAX_REPLY_DELAY, MAX_PROMPT_CHARS, MAX_PROMPT_FILE_BYTES } from '../lib/config.js';
+import { DEFAULT_MODEL, LOCAL_LLM_URL, TIMEZONE, DEFAULT_PAUSE_HOURS, DEFAULT_REPLY_DELAY, DEFAULT_SECRETARY_MODE, DEFAULT_LANG, DEFAULT_LANG_AUTO, MAX_REPLY_DELAY, MAX_PROMPT_CHARS, MAX_PROMPT_FILE_BYTES } from '../lib/config.js';
 import { canSleep, sleep } from '../lib/wait.js';
 import { parseCommand, displayName, errMsg, decodeUtf8 } from '../lib/text.js';
 import { say, withTyping } from '../lib/telegram.js';
@@ -528,6 +528,7 @@ async function runCommand(chatId, message, { cmd, arg }) {
       const summary = await runProbe({
         ownerName: await getSetting('owner_name', 'the owner'),
         lang,
+        langAuto: (await getSetting('lang_auto', DEFAULT_LANG_AUTO)) !== 'off',
         onProgress: async (done, total) => {
           if (!progressMsgId || done % 2) return;
           try { await api.editMessageText({ chat_id: chatId, message_id: progressMsgId, text: `${done}/${total}` }); } catch { /* ignore */ }

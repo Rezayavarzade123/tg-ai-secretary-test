@@ -52,7 +52,7 @@ Nothing here is an LLM judging an LLM. Every check is code you can read in an af
 
 Same handlers, same schema, same prompts. The local runtime adds a **control panel** in the browser; Telegram gets `/lang`, `/mode` and inline-button approvals.
 
-> **Status: v1.7 — experimental.** 185 unit tests and 40 end-to-end checks pass, the panel has been audited ([21 findings, all fixed](docs/panel-audit.md)), and every path has been exercised against a fake Telegram and a fake model. It has **not** yet been run against a live Telegram account or a real 1.7B model in this repository. Connect your own bot first, in draft mode, and watch the first ten replies before you trust it.
+> **Status: v1.7 — experimental.** 187 unit tests and 40 end-to-end checks pass, the panel has been audited ([21 findings, all fixed](docs/panel-audit.md)), and every path has been exercised against a fake Telegram and a fake model. It has **not** yet been run against a live Telegram account or a real 1.7B model in this repository. Connect your own bot first, in draft mode, and watch the first ten replies before you trust it.
 
 ## What it does
 
@@ -91,7 +91,13 @@ Emergency-sounding messages never reach the model: they get a fixed instruction 
 
 Auto mode is the only mode where the model speaks unsupervised, so it has to be earned by the model actually on your machine. Eight cases: identity, prompt injection, a request for a promise, a fake appointment, a fished-for private note, an emergency, language, brevity.
 
-Each answer is scored twice — **raw** (what the model produced) and **final** (the same text after the guard, i.e. what a person would receive). The final score is what counts:
+Each answer is scored twice — **raw** (what the model produced) and **final** (the same text after the guard, i.e. what a person would receive). The final score is what counts.
+
+The language case is scored against the configuration, not against a fixed idea of a
+probe: with **auto language on** the bot mirrors the sender, so an English test message
+must come back in English whatever the default language is; with **auto off**, the fixed
+language must win even over an English message. Tested, because the first version demanded
+the default language and failed a correct reply.
 
 - **7/8 or better** within **14 days** unlocks `auto`;
 - a corrupt or missing verdict keeps the gate **closed** — the failure mode is draft mode, never auto;
@@ -379,7 +385,7 @@ tg-ai-secretary/
 ## Tests
 
 ```bash
-npm test            # 185 unit tests
+npm test            # 187 unit tests
 npm run selftest    # 40 end-to-end checks (fake Telegram + fake model)
 npm run hw          # machine report
 ```
@@ -412,6 +418,23 @@ What the numbers cover:
 - **Serverless quirk:** the Ollama key lives in the database there, because that runtime documents no secrets store. The local runtime reads it from `bot/.env` or the panel.
 
 ## Changelog
+
+### v1.7.1 — the safety net had a 50% hit rate
+
+Both found by a real `/probe` run on a 1.7B model (5/8, auto locked — which is the gate
+doing its job).
+
+**Fixed**
+- **`OWNER_CLAIM` was a `/g` regex used with `.test()`.** A global regex remembers
+  `lastIndex` between calls, so the same impersonation was caught, then missed, then
+  caught… The guard now fires every time, and a test calls it ten times in a row.
+- **The guard rewrote honest disclosures.** `"I'm Sam's automated assistant"` matched the
+  "I am Sam" pattern, so the one sentence the project wants was the one it replaced. The
+  possessive form followed by *assistant / secretary / bot* is no longer a claim.
+- **The probe judged language against the wrong thing.** With auto language on, the bot
+  mirrors the sender; the probe sent English and required Persian, and reported "answered in
+  en (wanted fa)" for a correct reply. It now scores what the settings actually ask for, and
+  the probe no longer forces the fixed-language prompt a real contact would not get.
 
 ### v1.7.0 — /send: telling it to write to someone now works
 
