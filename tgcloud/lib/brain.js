@@ -156,7 +156,7 @@ export async function modelSettings() {
 // mode: "bot" (you, privately) or "secretary" (someone writing to your main account)
 // remember=false regenerates an answer without touching the conversation memory
 // (used by the "Regenerate" button on a draft).
-export async function respond({ scope, userText, mode, remember = true, chatId = null, lang = null, timeoutMs }) {
+export async function respond({ scope, userText, mode, remember = true, chatId = null, lang = null, timeoutMs, onDegenerate = 'reply' }) {
   const { provider, baseUrl, apiKey, model } = await modelSettings();
   if (provider === 'cloud' && !apiKey) {
     throw new Error('No cloud API key saved. Send /setkey <key>, or set the brain to "local" in the control panel.');
@@ -194,7 +194,7 @@ export async function respond({ scope, userText, mode, remember = true, chatId =
   let final = answer;
   let finalVerdict = verdict;
 
-  if (remember && !verdict.ok) {
+  if (onDegenerate !== 'off' && !verdict.ok) {
     await logDegenerate(scope, mode, verdict, userText, answer);
     try {
       const second = await chat({
@@ -231,9 +231,17 @@ export async function respond({ scope, userText, mode, remember = true, chatId =
     }
 
     if (!finalVerdict.ok) {
-      // Two failures in a row: say so, in the conversation's language, and keep it
-      // out of the history so the next turn starts clean.
+      // Two failures in a row. In your own chat, say so - you asked, and an honest
+      // sentence is better than a repetition. In Secretary mode the reader is
+      // somebody else, and they should get silence rather than the same apology five
+      // times; the caller turns this into a message to you instead.
       await logActivity('info', `Replaced a degenerate reply (${finalVerdict.reasons.join(', ')}).`);
+      if (onDegenerate === 'throw') {
+        const err = new Error('The model kept repeating itself, so nothing was sent.');
+        err.code = 'LLM_DEGENERATE';
+        err.reasons = finalVerdict.reasons;
+        throw err;
+      }
       return degenerateReply(await replyLanguage(mode, chatId, lang, past, userText));
     }
   }

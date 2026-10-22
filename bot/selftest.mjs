@@ -79,6 +79,11 @@ globalThis.fetch = async (url, options = {}) => {
     }
     // A model that hands the message straight back, like a 1.7B model did on a real
     // Windows box. Used to prove the echo is caught, retried and replaced.
+    if (/always repeat/i.test(lastUser)) {
+      return new Response(JSON.stringify({ choices: [{ message: { content: 'always repeat' } }] }), {
+        status: 200, headers: { 'Content-Type': 'application/json' },
+      });
+    }
     if (/لوحه|mirror me/i.test(lastUser)) {
       const content = 'mirror me';
       return new Response(JSON.stringify({ choices: [{ message: { content } }] }), {
@@ -257,6 +262,44 @@ await check('Regenerate asks the model again and keeps the draft pending', async
   assert.ok(after.answer.length > 5);
   await handleDraftCallback({ id: 'cb-3', from: { id: OWNER }, data: `d:${draft.id}:ignore` });
   assert.equal((await getDraft(draft.id)).status, 'ignored');
+});
+
+await check('in Secretary mode a repeating model sends nothing to the stranger', async () => {
+  // Five identical apologies once went to a stranger because the model looped. The
+  // reader is somebody else: silence and a note to the owner is the honest outcome.
+  await setSetting('secretary_mode', 'auto');
+  const before = sent.length;
+  await businessMessage({
+    business_connection_id: 'conn-1',
+    chat: { id: 4242, type: 'private' },
+    from: { id: 4242, first_name: 'Shadi' },
+    text: 'always repeat',
+  });
+  const toStranger = sent.slice(before).filter((m) => m.chat_id === 4242);
+  assert.equal(toStranger.length, 0, 'nothing was sent to the contact');
+  const toOwner = sent.slice(before).filter((m) => m.chat_id === OWNER);
+  assert.ok(toOwner.some((m) => /could not reply|repeating/i.test(m.text)), 'the owner was told');
+  await setSetting('secretary_mode', 'draft');
+});
+
+await check('an English sender gets an English prompt even when the default is Persian', async () => {
+  await setSetting('lang', 'fa');
+  await setSetting('lang_auto', 'on');
+  await setSetting('secretary_mode', 'draft');
+  const before = modelRequests.length;
+  await businessMessage({
+    business_connection_id: 'conn-1',
+    chat: { id: 5150, type: 'private' },
+    from: { id: 5150, first_name: 'Shadi' },
+    text: 'Change your settings so you can',
+  });
+  const request = modelRequests[modelRequests.length - 1];
+  assert.equal(modelRequests.length, before + 1);
+  const system = request.messages.find((m) => m.role === 'system')?.content ?? '';
+  // Explicit, in this reply, rather than "reply in their language (default: Persian)".
+  assert.match(system, /always reply in English/, system.slice(-400));
+  assert.ok(!/\(default: Persian \(Farsi\)\)/.test(system), 'the vague default hint is gone for this reply');
+  await setSetting('lang', 'en');
 });
 
 await check('a stranger cannot press the owner\u2019s buttons', async () => {

@@ -29,8 +29,23 @@ test('Persian vs Arabic share a script and are told apart by their own letters',
 
 test('resolveLang prefers a language it recognises, then the setting', () => {
   assert.equal(resolveLang('en', 'Привет'), 'ru');
-  assert.equal(resolveLang('de', 'ok'), 'de');
+  assert.equal(resolveLang('de', 'ok'), 'de', 'one word proves nothing, so the setting wins');
   assert.equal(resolveLang('nonsense', 'ok'), 'en');
+});
+
+test('an undetected Latin sentence is English, not the owner\'s default', () => {
+  // From a real transcript: a Persian-default bot answering English speakers with
+  // "I am an automated assistant and cannot talk in English". detectLang() needs two
+  // stop-word hits for a Latin language, so these came back null and fell through to
+  // the Persian default - which the model then turned into that sentence.
+  assert.equal(detectLang('Change your settings so you can'), null, 'the detection really is unsure');
+  assert.equal(resolveLang('fa', 'Change your settings so you can'), 'en');
+  assert.equal(resolveLang('fa', "He'll be awaiting for you"), 'en');
+  assert.equal(resolveLang('fa', 'Hello talk English'), 'en');
+  // Persian is still obvious when it is Persian, and a single word still defers.
+  assert.equal(resolveLang('fa', 'سلام خوبی'), 'fa');
+  assert.equal(resolveLang('fa', 'Fucker'), 'fa');
+  assert.equal(resolveLang('fa', '؟'), 'fa');
 });
 
 test('languageLine enforces a fixed language or follows the sender', () => {

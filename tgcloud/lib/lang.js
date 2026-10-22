@@ -113,10 +113,20 @@ export function languageLine({ lang = 'en', auto = true } = {}) {
   return `Language: always reply in ${languagePromptName(lang)}, even if the person writes in another language. Do not switch unless they explicitly ask you to translate.`;
 }
 
-// For the bot's own (non-model) strings, English is the fallback.
+// Which language to answer in.
+//
+// detectLang() needs two stop-word hits before it names a Latin language, so plain
+// English often comes back null - and falling straight through to the owner's
+// default is how a Persian-default bot ended up answering English speakers with
+// "I am an automated assistant and cannot talk in English". Latin letters and no
+// better evidence is English; that is the honest reading of "undetected".
 export function resolveLang(preferred, text) {
   const detected = detectLang(text);
   if (detected && isLanguage(detected)) return detected;
+  // Two or more Latin words and no better evidence: English is the honest guess.
+  // One word ("ok") proves nothing, so the setting still wins there.
+  const latinWords = (String(text ?? '').match(/[a-zà-öø-ÿğışçöü]+/gi) || []).length;
+  if (latinWords >= 2 && !/[\u0600-\u06ff]/.test(String(text ?? ''))) return 'en';
   const p = String(preferred || 'en').toLowerCase();
   return isLanguage(p) ? p : 'en';
 }

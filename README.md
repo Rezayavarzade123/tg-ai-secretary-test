@@ -52,7 +52,7 @@ Nothing here is an LLM judging an LLM. Every check is code you can read in an af
 
 Same handlers, same schema, same prompts. The local runtime adds a **control panel** in the browser; Telegram gets `/lang`, `/mode` and inline-button approvals.
 
-> **Status: v1.7 — experimental.** 206 unit tests and 43 end-to-end checks pass, the panel has been audited ([21 findings, all fixed](docs/panel-audit.md)), and every path has been exercised against a fake Telegram and a fake model. It has **not** yet been run against a live Telegram account or a real 1.7B model in this repository. Connect your own bot first, in draft mode, and watch the first ten replies before you trust it.
+> **Status: v1.7 — experimental.** 207 unit tests and 45 end-to-end checks pass, the panel has been audited ([21 findings, all fixed](docs/panel-audit.md)), and every path has been exercised against a fake Telegram and a fake model. It has **not** yet been run against a live Telegram account or a real 1.7B model in this repository. Connect your own bot first, in draft mode, and watch the first ten replies before you trust it.
 
 ## What it does
 
@@ -105,6 +105,18 @@ Two different answers to that (`tgcloud/lib/degenerate.js`, `tgcloud/lib/smallta
   one retry with a correcting system message at a higher temperature, and if that fails too,
   a short honest sentence in place of a reply — which is not written into the conversation
   history, so the loop cannot feed itself.
+- **In Secretary mode a repeating model says nothing at all**, and tells you instead. An
+  apology five times is better than a lie, but it is not a conversation; the person writing
+  to you gets silence, and the reason appears in your chat and the activity log. The probe is
+  exempt: it measures the model as it is, retries included.
+
+**Language is chosen per reply.** `detectLang()` only names a Latin language when two
+stop-words agree, so ordinary English (`Change your settings so you can`) came back null and
+fell through to the owner's default — a Persian-default bot answering English speakers in
+Persian, which a 1.7B model then rendered as *"I am an automated assistant and cannot talk in
+English"*. Two or more Latin words and no better evidence now means English; a single word
+(`ok`) still defers to the setting. In Secretary mode the sender's language is passed to the
+prompt as an instruction for that reply instead of the vague *"default: Persian"*.
 
 ### The probe gate (`tgcloud/lib/probe.js`)
 
@@ -362,7 +374,7 @@ tg-ai-secretary/
 │  ├─ sdk/                        JSON store, query builder, Telegram client — the shim
 │  ├─ hardware.mjs                machine report → threads, flags, model
 │  ├─ updater.mjs                 check / fast-forward / roll back from the Git remote
-│  ├─ selftest.mjs                43 end-to-end checks, fake Telegram and model
+│  ├─ selftest.mjs                45 end-to-end checks, fake Telegram and model
 │  ├─ seed-demo.mjs               sample data for the panel
 │  └─ state/                      your data (git-ignored): bot.json, panel-token
 ├─ tgcloud/                    shared by both runtimes
@@ -406,8 +418,8 @@ tg-ai-secretary/
 ## Tests
 
 ```bash
-npm test            # 206 unit tests
-npm run selftest    # 43 end-to-end checks (fake Telegram + fake model)
+npm test            # 207 unit tests
+npm run selftest    # 45 end-to-end checks (fake Telegram + fake model)
 npm run hw          # machine report
 ```
 
@@ -439,6 +451,28 @@ What the numbers cover:
 - **Serverless quirk:** the Ollama key lives in the database there, because that runtime documents no secrets store. The local runtime reads it from `bot/.env` or the panel.
 
 ## Changelog
+
+### v1.7.4 — a stranger got the same apology five times
+
+A transcript from Secretary mode: an English-speaking contact (`Hello talk English`,
+`Change your settings so you can`, `He'll be awaiting for you`) got, five times,
+
+> I am an automated assistant and cannot talk in English. Please let me know what you need.
+
+Both halves of that are now fixed.
+
+**Fixed**
+- **A language with no evidence fell back to the owner's default.** `detectLang()` needs two
+  stop-words for a Latin language, so plain English came back null, and a Persian-default bot
+  answered in Persian — which the model turned into "cannot talk in English". Two or more
+  Latin words now resolve to English; one word still defers to the setting.
+- **The Secretary prompt got a vague language hint** (`reply in their language, default:
+  Persian`). The sender's detected language is passed as an explicit instruction for that
+  reply, which a 1.7B model follows far more reliably.
+- **A repeating reply reached a stranger.** The repeat detection ran only when history was
+  being written, which Secretary mode does not do — so it never ran there. It now runs for
+  every reply, and in Secretary mode two failures mean **silence to the contact** plus a note
+  to the owner, instead of the same apology five times. The probe opts out on purpose.
 
 ### v1.7.3 — the model was repeating itself, so some answers come from code
 

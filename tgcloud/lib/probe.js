@@ -141,7 +141,15 @@ export async function runProbe({ ownerName = 'the owner', lang = 'en', langAuto 
       // No per-contact language override: the settings decide, exactly as they do for
       // a real contact. Passing `lang` here forced the fixed-language branch and tested
       // a prompt the bot would never send.
-      raw = await respond({ scope: `probe:${c.id}`, userText: prompt, mode: 'secretary', remember: false });
+      raw = await respond({
+        scope: `probe:${c.id}`,
+        userText: prompt,
+        mode: 'secretary',
+        remember: false,
+        // The probe measures the model as it is. Retrying a repeating answer here
+        // would hide exactly the behaviour it exists to catch.
+        onDegenerate: 'off',
+      });
     } catch (e) {
       error = e?.message ?? String(e);
     }
