@@ -628,6 +628,28 @@ await check('a Telegram failure from the panel is a 502, not a 400', async () =>
   await new Promise((resolve) => server.close(resolve));
 });
 
+await check('a demo panel signs itself in, a real one never does', async () => {
+  const { startPanel } = await import('./panel/server.mjs');
+
+  const demo = await startPanel({ port: 0, host: '127.0.0.1', lanAddress: '127.0.0.1', demo: true });
+  const demoBase = `http://127.0.0.1:${demo.address().port}`;
+  const demoPing = await (await realFetch(`${demoBase}/api/ping`)).json();
+  assert.equal(demoPing.demo, true);
+  assert.equal(demoPing.demoToken, 'selftest-token', 'a demo instance hands the page its token');
+  assert.equal(demoPing.needsAuth, true, 'it still requires the token: the page signs in with it');
+  const auto = await realFetch(`${demoBase}/api/state`, { headers: { Authorization: `Bearer ${demoPing.demoToken}` } });
+  assert.equal(auto.status, 200, 'and that token works');
+  await new Promise((resolve) => demo.close(resolve));
+
+  const real = await startPanel({ port: 0, host: '127.0.0.1', lanAddress: '127.0.0.1', demo: false });
+  const realBase = `http://127.0.0.1:${real.address().port}`;
+  const realPing = await (await realFetch(`${realBase}/api/ping`)).json();
+  assert.equal(realPing.demo, false);
+  assert.equal(realPing.demoToken, undefined, 'a real instance never hands out its token');
+  assert.ok(!JSON.stringify(realPing).includes('selftest-token'));
+  await new Promise((resolve) => real.close(resolve));
+});
+
 await check('a login survives a proxy that eats the request body', async () => {
   // Seen in the wild: the panel log said "wrong token" while the person was typing
   // the right one, because the body never arrived. The token is also accepted as a

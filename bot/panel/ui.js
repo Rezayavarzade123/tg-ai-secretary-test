@@ -66,9 +66,13 @@ async function api(path, options = {}) {
   try { body = await res.json(); } catch { body = {}; }
   if (res.status === 401) {
     // The login route reports "wrong token" itself; everything else means the
-    // session is gone, so drop the stale copy and ask again.
+    // session is gone, so drop the stale copy, say so on the login screen, and ask
+    // again. Silently showing the box again is what made a dead session look like
+    // a rejected password.
     if (path !== '/api/login') {
       saveToken('');
+      const err = $('#loginErr');
+      if (err) err.textContent = `Session expired — ${body?.error || 'sign in again'}`;
       showLogin(true);
     }
     throw new Error(body?.error || 'Unauthorised — enter the panel token.');
@@ -1024,20 +1028,10 @@ async function saveSettings(patch, okMessage, extra = {}) {
 
 // --- boot -----------------------------------------------------------------------
 $('#loginBtn').onclick = async () => {
-  const token = $('#tokenInput').value.trim();
   try {
-    // Send it twice on purpose: in the body, and as a header. If a proxy drops the
-    // body, the header still signs us in — otherwise a correct token looks wrong.
-    const body = await api('/api/login', {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${token}` },
-      body: JSON.stringify({ token }),
-    });
-    saveToken(body.token || token);
-    $('#loginErr').textContent = '';
-    $('#tokenInput').value = '';
-    showLogin(false);
-    await refresh({ quiet: false });
+    // signIn sends the token in the body and as a header: if a proxy drops one,
+    // the other still signs us in.
+    await signIn($('#tokenInput').value.trim());
   } catch (e) {
     $('#loginErr').textContent = e.message;
     $('#loginErr').style.color = 'var(--bad)';
@@ -1058,22 +1052,55 @@ setInterval(() => {
   refresh();
 }, 5000);
 
+async function signIn(token) {
+  const body = await api('/api/login', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ token }),
+  });
+  saveToken(body.token || token);
+  $('#tokenInput').value = '';
+  $('#loginErr').textContent = '';
+  showLogin(false);
+  await refresh({ quiet: false });
+}
+
 (async () => {
   // "/?token=…" signs this tab in. Keep it in sessionStorage and take it out of
   // the address bar, so it does not survive in history, a screenshot or a link
   // someone was sent.
+  let fromUrl = '';
   try {
-    const fromUrl = new URL(location.href).searchParams.get('token');
-    if (fromUrl) {
-      saveToken(fromUrl.trim());
-      history.replaceState(null, '', location.pathname + location.hash);
-    }
-  } catch { /* no URL API: the cookie path still works */ }
+    fromUrl = new URL(location.href).searchParams.get('token') || '';
+    if (fromUrl) history.replaceState(null, '', location.pathname + location.hash);
+  } catch { /* no URL API: the header and cookie paths still work */ }
+  if (fromUrl) saveToken(fromUrl.trim());
 
   try {
     const ping = await api('/api/ping');
-    if (ping.needsAuth) { showLogin(true); return; }
-    await refresh({ quiet: false });
+    if (!ping.needsAuth) { await refresh({ quiet: false }); return; }
+
+    // A demo instance (sample data, no bot token) signs itself in: there is
+    // nothing to protect, and a login wall in front of the sample data just looks
+    // like a broken panel.
+    if (ping.demo && ping.demoToken) {
+      try {
+        await signIn(ping.demoToken);
+        toast('Demo panel — signed in automatically');
+        return;
+      } catch (e) {
+        $('#loginErr').textContent = e.message;
+      }
+    }
+
+    const hint = $('#loginHint');
+    if (hint) {
+      hint.innerHTML = ping.demo
+        ? `This is the <strong>demo</strong> panel. The token is <code>${esc(ping.demoToken || 'demo')}</code>.`
+        : 'The token is printed by the bot when it starts, and stored in <code>bot/state/panel-token</code>. On a real instance you can also open the panel with <code>?token=…</code>.';
+      if (ping.demo && ping.demoToken) $('#tokenInput').value = ping.demoToken;
+    }
+    showLogin(true);
   } catch (e) {
     showLogin(true);
   }

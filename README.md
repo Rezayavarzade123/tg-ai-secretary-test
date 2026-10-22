@@ -13,7 +13,7 @@ A Telegram AI assistant and secretary that can answer as **your** automated assi
 
 Both use the same handlers, the same database schema and the same prompts. The local runtime provides a **control panel** in the browser; Telegram gets `/lang`, `/mode` and inline-button approvals.
 
-> **Status:** experimental. The local runtime has unit tests plus an end-to-end self test (`npm run selftest`, 30 checks) that covers connections, drafts, approvals, the safety net and the panel API. It has **not** been run on a real model or against a live Telegram account in this repository — the first thing to do is connect your own bot and send it a message.
+> **Status:** experimental. The local runtime has unit tests plus an end-to-end self test (`npm run selftest`, 31 checks) that covers connections, drafts, approvals, the safety net and the panel API. It has **not** been run on a real model or against a live Telegram account in this repository — the first thing to do is connect your own bot and send it a message.
 
 ## What it does
 
@@ -146,6 +146,8 @@ WantedBy=multi-user.target
 
 ### Demo without a bot
 
+> The demo panel signs itself in. `npm run demo` points the runtime at `bot/state-demo/`, which the panel recognises, and the page opens on the dashboard with no login. A real instance (your own state directory) always asks for the token.
+
 ```bash
 npm run demo                        # writes bot/state-demo with sample drafts and notes
 BOT_STATE_DIR=./bot/state-demo PANEL_TOKEN=demo npm start
@@ -158,7 +160,7 @@ BOT_STATE_DIR=./bot/state-demo PANEL_TOKEN=demo npm start
 npm test          # 84 unit tests: text, prompts, delay, typing, language, guards, local db,
                   # panel settings, v1.2 features, machine detection, and static checks
                   # on the panel's own front end
-npm run selftest  # 30 end-to-end checks with fake Telegram + fake model
+npm run selftest  # 31 end-to-end checks with fake Telegram + fake model
 ```
 
 ---

@@ -58,6 +58,13 @@ const ASSETS = {
 
 let ACCESS_TOKEN = process.env.PANEL_TOKEN || '';
 
+// A demo instance is a panel running against bot/state-demo: fake contacts, fake
+// drafts, no bot token, nothing private. It is started to look at the interface,
+// so it signs itself in — a login screen in front of sample data is friction with
+// no security value, and the token is already public (it is in the README).
+// Real instances are unaffected: they never expose this.
+let DEMO = process.env.PANEL_DEMO === '1' || /state-demo\/?$/.test(process.env.BOT_STATE_DIR || '');
+
 // --- errors ---------------------------------------------------------------------
 class HttpError extends Error {
   constructor(status, message) { super(message); this.status = status; }
@@ -590,7 +597,15 @@ async function handleApi(req, res, url) {
   const body = isWrite ? await readBody(req) : {};
 
   if (route === 'GET /api/ping') {
-    return json(res, 200, { ok: true, needsAuth: Boolean(ACCESS_TOKEN) && !authed(req, url), version: '1.1.1' });
+    // Unauthenticated on purpose: the page needs to know whether to show a login
+    // form before it has a token. In demo mode it also gets the token it needs.
+    return json(res, 200, {
+      ok: true,
+      needsAuth: Boolean(ACCESS_TOKEN) && !authed(req, url),
+      version: '1.2.0',
+      demo: DEMO,
+      demoToken: DEMO ? ACCESS_TOKEN : undefined,
+    });
   }
 
   if (route === 'POST /api/login') {
@@ -800,7 +815,10 @@ async function handleApi(req, res, url) {
 }
 
 // --- server ------------------------------------------------------------------------
-export async function startPanel({ port = 8787, host = '0.0.0.0', lanAddress = '127.0.0.1' } = {}) {
+export async function startPanel({ port = 8787, host = '0.0.0.0', lanAddress = '127.0.0.1', demo } = {}) {
+  // `demo: true` forces demo behaviour (self sign-in) for tests and for anyone who
+  // wants to show the panel against sample data without setting the state dir.
+  if (demo !== undefined) DEMO = Boolean(demo);
   ensureToken();
 
   const server = http.createServer((req, res) => {
