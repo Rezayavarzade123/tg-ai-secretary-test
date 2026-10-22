@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Secretary · control panel</title>
+<link rel="stylesheet" href="/ui.css">
+</head>
+<body>
+
+<div id="app">
+  <aside>
+    <div class="brand">
+      <div class="logo" aria-hidden="true">S</div>
+      <div>
+        <strong>Secretary</strong>
+        <small id="brandSub">control panel</small>
+      </div>
+    </div>
+    <nav aria-label="Sections">
+      <button type="button" data-tab="dashboard" class="active">◎ Dashboard</button>
+      <button type="button" data-tab="secretary">✉ Secretary</button>
+      <button type="button" data-tab="drafts">📝 Drafts <span class="badge" id="navDrafts" hidden>0</span></button>
+      <button type="button" data-tab="people">👤 People</button>
+      <button type="button" data-tab="prompts">⌘ Prompts</button>
+      <button type="button" data-tab="notes">🗒 Notes</button>
+      <button type="button" data-tab="activity">◷ Activity</button>
+      <button type="button" data-tab="setup">⚙ Setup</button>
+    </nav>
+    <div class="sidebar-foot">
+      <div id="footBot" class="mono">—</div>
+      <div id="footUptime">—</div>
+    </div>
+  </aside>
+  <main>
+    <header class="top">
+      <h1 id="pageTitle">Dashboard</h1>
+      <span class="pill" id="pillBot"><span class="dot"></span> <span>connecting…</span></span>
+      <span class="pill" id="pillModel"><span class="dot"></span> <span>model</span></span>
+      <span class="pill" id="pillPoll"><span class="dot"></span> <span>polling</span></span>
+      <span style="flex:1"></span>
+      <button type="button" class="ghost small" id="refreshBtn">Refresh</button>
+    </header>
+    <div id="view" aria-live="off"></div>
+  </main>
+</div>
+
+<div id="login">
+  <div class="card">
+    <h2>Control panel</h2>
+    <p class="hint">Paste the access token printed by the bot at start-up (also in the panel token file), or open the URL that includes <code>?token=…</code>.</p>
+    <div class="field">
+      <label for="tokenInput">Access token</label>
+      <input id="tokenInput" type="password" autocomplete="current-password" placeholder="panel token">
+    </div>
+    <button type="button" class="primary" id="loginBtn" style="width:100%">Enter</button>
+    <p class="hint small" id="loginHint" style="margin:10px 0 0"></p>
+    <p class="hint small" id="loginErr" style="margin:10px 0 0" role="alert"></p>
+  </div>
+</div>
+
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+<script src="/ui.js"></script>
+</body>
+</html>

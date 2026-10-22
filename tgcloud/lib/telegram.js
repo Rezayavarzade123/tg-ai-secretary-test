@@ -1,5 +1,6 @@
 import { api } from 'sdk';
-import { OWNER_ID, TYPING_REFRESH_MS } from './config.js';
+import { TYPING_REFRESH_MS } from './config.js';
+import { ownerId } from './owner.js';
 import { chunk } from './text.js';
 
 // Send plain text (no parse_mode on purpose: model output often breaks Markdown/HTML).
@@ -39,7 +40,9 @@ export async function withTyping(chatId, businessConnectionId, work, everyMs = T
 // Message the owner without ever letting a failure break the main flow.
 export async function tellOwner(text) {
   try {
-    await say(OWNER_ID, text);
+    const owner = await ownerId();
+    if (!owner) return;
+    await say(owner, text);
   } catch (e) {
     console.warn('tellOwner failed:', e?.description ?? e);
   }

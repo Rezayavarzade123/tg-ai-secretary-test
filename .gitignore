@@ -1,2 +1,9 @@
 node_modules/
 .tgcloud/
+
+# Local runtime state (your messages, drafts, token, panel password).
+bot/state/
+bot/state-*/
+bot/.env
+.env
+*.log

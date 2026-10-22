@@ -1,7 +1,8 @@
 import { api, db } from 'sdk';
 import { eq } from 'sdk/db';
 import { secretaryChats } from '../schema.js';
-import { OWNER_ID, DEFAULT_PAUSE_HOURS } from './config.js';
+import { DEFAULT_PAUSE_HOURS } from './config.js';
+import { ownerId } from './owner.js';
 import { getSetting, setSetting } from './settings.js';
 
 const nowSec = () => Math.floor(Date.now() / 1000);
@@ -34,7 +35,7 @@ export async function isSecretaryConnection(connId) {
   if ((await readConns()).includes(connId)) return true;
   try {
     const c = await api.getBusinessConnection({ business_connection_id: connId });
-    if (c?.user?.id === OWNER_ID && c.is_enabled !== false) {
+    if (c?.user?.id === (await ownerId()) && c.is_enabled !== false) {
       await addSecretaryConn(connId);
       return true;
     }
