@@ -29,6 +29,7 @@ import { LANGUAGES, isLanguage } from '../../tgcloud/lib/lang.js';
 import { recentActivity, logActivity } from '../../tgcloud/lib/activity.js';
 import { ownerId, ownerName } from '../../tgcloud/lib/owner.js';
 import { listContacts, getContact, updateContact, NOTES_LIMIT } from '../../tgcloud/lib/contacts.js';
+import { listFacts, deleteFact, setPinned, clearFacts, FACT_LIMIT } from '../../tgcloud/lib/memory.js';
 import { metricsSummary, recentMetrics } from '../../tgcloud/lib/metrics.js';
 import { parseWindow, describeWindow, inQuietHours } from '../../tgcloud/lib/hours.js';
 import { runProbe, saveProbe, lastProbe, probeVerdict } from '../../tgcloud/lib/probe.js';
@@ -765,7 +766,14 @@ async function handleApi(req, res, url) {
   }
 
   if (route === 'GET /api/contacts') {
-    return json(res, 200, { contacts: await listContacts(200) });
+    const contacts = await listContacts(200);
+    // Learned facts ride along: the People tab shows what the bot picked up, so
+    // the owner can delete a wrong one without leaving the page.
+    const withFacts = await Promise.all(contacts.map(async (c) => ({
+      ...c,
+      facts: await listFacts(c.chatId).catch(() => []),
+    })));
+    return json(res, 200, { contacts: withFacts, factLimit: FACT_LIMIT });
   }
   if (req.method === 'POST' && /^\/api\/contacts\/\d+$/.test(url.pathname)) {
     const chatId = Number(url.pathname.split('/').pop());
@@ -781,6 +789,30 @@ async function handleApi(req, res, url) {
     } catch (e) {
       throw bad(e.message);
     }
+  }
+
+  // Learned facts: delete one, pin it (pinned facts survive the size cap), or
+  // clear a person's whole list.
+  if (req.method === 'POST' && /^\/api\/facts\/\d+$/.test(url.pathname)) {
+    const id = Number(url.pathname.split('/').pop());
+    if (!('pinned' in body)) throw bad('Send { "pinned": true } or delete the fact.');
+    try {
+      await setPinned(id, Boolean(body.pinned));
+      return json(res, 200, { ok: true });
+    } catch (e) {
+      throw gone(e.message);
+    }
+  }
+  if (req.method === 'DELETE' && /^\/api\/facts\/\d+$/.test(url.pathname)) {
+    const id = Number(url.pathname.split('/').pop());
+    const removed = await deleteFact(id);
+    if (!removed) throw gone('No such fact.');
+    return json(res, 200, { ok: true });
+  }
+  if (req.method === 'DELETE' && /^\/api\/contacts\/\d+\/facts$/.test(url.pathname)) {
+    const chatId = Number(url.pathname.split('/')[3]);
+    await clearFacts(chatId);
+    return json(res, 200, { ok: true });
   }
 
   if (route === 'GET /api/metrics') {

@@ -1,6 +1,6 @@
 import { db } from 'sdk';
 import { eq, and, desc, asc, lte } from 'sdk/db';
-import { history, notes } from '../schema.js';
+import { history, notes, secretaryChats } from '../schema.js';
 import { getSetting } from './settings.js';
 import { chat } from './llm.js';
 import {
@@ -13,6 +13,7 @@ import {
 import { nowString, fillPrompt } from './text.js';
 import { languageLine } from './lang.js';
 import { getContact, contactPromptLine } from './contacts.js';
+import { factsPromptSection, learnFromConversation, shouldLearn, factsEnabled } from './memory.js';
 import { recordMetric } from './metrics.js';
 
 // Two modes, each with its own prompt:
@@ -91,6 +92,12 @@ async function secretaryPrompt({ chatId, lang } = {}) {
     `${custom ? fillPrompt(custom, ownerName) : defaultPrompt('secretary', ownerName)}\n${await languageSection(lang || contact?.lang)}`,
   ];
   if (about) sections.push(about);
+
+  // What the sender said about themselves in earlier conversations. Labelled as
+  // their words, never as instructions; about costs nothing when empty.
+  const learned = chatId ? await factsPromptSection(chatId, contact?.name) : '';
+  if (learned) sections.push(learned);
+
   sections.push(`Information you may share (written by ${ownerName}): ${info || '(nothing, so do not invent availability or details)'}`);
   sections.push(await dateSection());
   return sections.join(SECTION_BREAK);
@@ -187,4 +194,42 @@ export async function rememberExchange(scope, userText, answer, mode = 'secretar
     { scope, role: 'assistant', content: answer },
   ]).run();
   await trimHistory(scope, historyLimit(mode));
+
+  // Count the message and, if enough have piled up, learn from the conversation.
+  // Deliberately not awaited: a reply must never wait for the note-taking pass,
+  // and on one CPU core that second call is expensive.
+  if (mode === 'secretary') {
+    const chatId = Number(String(scope).split(':')[1]);
+    if (Number.isInteger(chatId)) {
+      void noteMessageAndMaybeLearn(chatId).catch(() => {});
+    }
+  }
+}
+
+async function noteMessageAndMaybeLearn(chatId) {
+  const contact = await getContact(chatId);
+  if (!contact) return;
+  const since = Number(contact.msgSinceFacts ?? 0) + 1;
+  await db.insert(secretaryChats)
+    .values({ chatId, msgSinceFacts: since })
+    .onConflictDoUpdate({ target: secretaryChats.chatId, set: { msgSinceFacts: since } })
+    .run();
+
+  if (!(await factsEnabled())) return;
+  if (!(await shouldLearn({ ...contact, msgSinceFacts: since }))) return;
+
+  const rows = await db.select().from(history)
+    .where(eq(history.scope, `secretary:${chatId}`))
+    .orderBy(desc(history.id))
+    .limit(6)
+    .all();
+  const messages = rows.reverse().map((r) => ({ role: r.role, content: r.content }));
+  if (messages.length < 2) return;
+
+  await db.insert(secretaryChats)
+    .values({ chatId, msgSinceFacts: 0, factsAt: Math.floor(Date.now() / 1000) })
+    .onConflictDoUpdate({ target: secretaryChats.chatId, set: { msgSinceFacts: 0, factsAt: Math.floor(Date.now() / 1000) } })
+    .run();
+
+  await learnFromConversation({ chatId, name: contact.name, messages });
 }

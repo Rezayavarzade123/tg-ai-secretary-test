@@ -101,7 +101,7 @@ async function refresh({ quiet = true } = {}) {
     S.state = await api('/api/state');
     if (S.tab === 'drafts') S.drafts = (await api(`/api/drafts?status=${encodeURIComponent(S.draftStatus)}`)).drafts;
     if (S.tab === 'notes') S.notes = (await api('/api/notes')).notes;
-    if (S.tab === 'people') S.contacts = (await api('/api/contacts')).contacts;
+    if (S.tab === 'people') await loadContacts();
     if (S.tab === 'prompts') S.prompts = await api('/api/prompts');
     if (S.tab === 'activity') {
       S.activity = (await api('/api/activity')).activity;
@@ -113,6 +113,10 @@ async function refresh({ quiet = true } = {}) {
     if (!quiet) toast(e.message, true);
     else console.warn(e);
   }
+}
+
+async function loadContacts() {
+  S.contacts = (await api('/api/contacts')).contacts;
 }
 
 function renderChrome() {
@@ -471,6 +475,13 @@ function viewPeople() {
   <div class="card" style="margin-bottom:14px">
     <h2>People</h2>
     <p class="hint">Everyone who has written to your account. <strong>Context</strong> is added to the prompt for that chat only — tell it who they are. <strong>Language</strong> overrides the global setting for one person. <strong>Blocked</strong> means the bot ignores them entirely.</p>
+    <div class="row" style="justify-content:space-between">
+      <div>
+        <div>Learn from conversations</div>
+        <div class="small muted">After a few messages the bot writes down what someone says about themselves. Their words only — never instructions, never codes or card numbers — and labelled as theirs in the prompt.</div>
+      </div>
+      ${toggle('learnSw', (st.settings?.facts_learn || 'on') !== 'off', 'Learn facts from conversations')}
+    </div>
     ${list.length === 0 ? '<p class="muted">Nobody yet. When someone messages your account, they show up here.</p>' : ''}
   </div>
   ${list.map((c) => `
@@ -496,6 +507,18 @@ function viewPeople() {
           </select>
         </div>
       </div>
+      ${(c.facts && c.facts.length) ? `
+      <div style="margin-top:10px">
+        <label>Learned from them (${c.facts.length}/${st.factLimit || 12})</label>
+        <div class="chips">
+          ${c.facts.map((f) => `<span class="chip" title="learned ${f.createdAt ? fmtAgo(f.createdAt * 1000) : 'recently'}">
+            ${esc(f.text)}
+            ${f.pinned ? '<span class="tag ok" style="margin-left:6px">pinned</span>' : ''}
+            <button type="button" class="chip-x" data-fact-del="${f.id}" aria-label="Delete this fact">×</button>
+          </span>`).join('')}
+        </div>
+        <button type="button" class="small" data-facts-clear="${c.chatId}">Forget everything learned about ${esc(c.name || 'this person')}</button>
+      </div>` : ''}
       <div class="row" style="margin-top:9px">
         <button type="button" class="primary" data-contact-save="${c.chatId}">Save</button>
         ${toggle(`block-${c.chatId}`, c.blocked, 'Block this person')}
@@ -823,6 +846,30 @@ function wire() {
         toast('Saved');
         S.dirty = false;
         await refresh();
+      } catch (e) { toast(e.message, true); }
+    };
+  });
+  bindToggle('learnSw', (on) => saveSettings({ facts_learn: on ? 'on' : 'off' }, on
+    ? 'Learning from conversations is on'
+    : 'Learning from conversations is off'));
+  document.querySelectorAll('[data-fact-del]').forEach((b) => {
+    b.onclick = async () => {
+      try {
+        await api(`/api/facts/${b.dataset.factDel}`, { method: 'DELETE' });
+        toast('Fact deleted');
+        await loadContacts();
+        render();
+      } catch (e) { toast(e.message, true); }
+    };
+  });
+  document.querySelectorAll('[data-facts-clear]').forEach((b) => {
+    b.onclick = async () => {
+      if (!window.confirm('Forget every fact learned about this person?')) return;
+      try {
+        await api(`/api/contacts/${b.dataset.factsClear}/facts`, { method: 'DELETE' });
+        toast('Learned facts removed');
+        await loadContacts();
+        render();
       } catch (e) { toast(e.message, true); }
     };
   });

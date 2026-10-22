@@ -144,3 +144,17 @@ pre.log { background: #0b1118; border: 1px solid var(--line); border-radius: 9px
 #login { position: fixed; inset: 0; background: #0b0f14ee; display: none; place-items: center; z-index: 100; }
 #login.show { display: grid; }
 #login .card { width: min(420px, 92vw); }
+
+/* Learned facts (People tab): one chip per fact, deletable. */
+.chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0 8px; }
+.chip {
+  display: inline-flex; align-items: center; gap: 4px;
+  max-width: 100%; padding: 4px 6px 4px 9px;
+  border: 1px solid var(--line); border-radius: 14px;
+  background: var(--panel); color: var(--text); font-size: 12.5px; line-height: 1.35;
+}
+.chip-x {
+  border: 0; background: transparent; color: var(--muted);
+  font-size: 15px; line-height: 1; cursor: pointer; padding: 0 2px;
+}
+.chip-x:hover { color: var(--bad); }

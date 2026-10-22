@@ -13,6 +13,7 @@ import { parseWindow, describeWindow } from '../lib/hours.js';
 import { listContacts, getContact, updateContact, NOTES_LIMIT } from '../lib/contacts.js';
 import { runProbe, saveProbe, formatProbe, probeVerdict, lastProbe } from '../lib/probe.js';
 import { metricsSummary } from '../lib/metrics.js';
+import { listFacts, deleteFact, factsEnabled } from '../lib/memory.js';
 import { setMuted } from '../lib/secretary.js';
 import { isOwner, ownerId } from '../lib/owner.js';
 import { LANGUAGES, isLanguage, language, languagePromptName } from '../lib/lang.js';
@@ -37,6 +38,9 @@ People (context makes a small model much better)
 /contact <chat_id> note <text>  what I should know about them
 /contact <chat_id> lang <code|auto>  always answer them in this language
 /block <chat_id>, /unblock <chat_id>  ignore this person completely
+/whatlearned <chat_id>  what I picked up from them, with ids
+/forgetfact <id>  delete one learned fact
+/learn on|off  learn facts from conversations at all
 
 Safety
 /probe  test the model against the questions it should fail safely (needed for auto)
@@ -342,6 +346,50 @@ async function runCommand(chatId, message, { cmd, arg }) {
         return;
       }
       await say(chatId, 'Usage: /contact <chat_id> note <text>  or  /contact <chat_id> lang <code|auto>');
+      return;
+    }
+
+    case 'whatlearned': {
+      const id = Number(arg);
+      if (!Number.isInteger(id) || id === 0) { await say(chatId, 'Usage: /whatlearned <chat_id> (see /contacts)'); return; }
+      const facts = await listFacts(id);
+      if (!facts.length) {
+        await say(chatId, `Nothing learned about chat ${id} yet. I only write down what someone says about themselves, after a few messages.`);
+        return;
+      }
+      await say(chatId,
+        `What I learned about chat ${id} (their words, not instructions):\n` +
+        facts.map((f) => `#${f.id} ${f.text}${f.pinned ? ' 📌' : ''}`).join('\n') +
+        `\n\nDelete one with /forgetfact <id>, or in the control panel.`);
+      return;
+    }
+
+    case 'forgetfact': {
+      const id = Number(arg);
+      if (!Number.isInteger(id) || id === 0) { await say(chatId, 'Usage: /forgetfact <id> (see /whatlearned)'); return; }
+      const ok = await deleteFact(id);
+      await say(chatId, ok ? `Forgotten (#${id}).` : `There is no fact #${id}.`);
+      return;
+    }
+
+    case 'learn': {
+      const cur = await factsEnabled();
+      if (!arg) {
+        await say(chatId,
+          `Learning from conversations: ${cur ? 'ON' : 'OFF'}\n\n` +
+          'After a few messages with someone I write down what they say about themselves — their job, ' +
+          'family, schedule, how they prefer to be contacted — and use it next time.\n' +
+          'Never instructions, never codes, passwords or card numbers. You can see and delete ' +
+          'everything with /whatlearned <chat_id> or in the People tab.\n\n' +
+          '/learn on|off');
+        return;
+      }
+      const v = arg.toLowerCase();
+      if (!['on', 'off'].includes(v)) { await say(chatId, 'Usage: /learn on|off'); return; }
+      await setSetting('facts_learn', v);
+      await say(chatId, v === 'on'
+        ? 'I will learn facts from conversations again.'
+        : 'I will stop learning new facts. What I already know stays until you delete it.');
       return;
     }
 

@@ -12,7 +12,7 @@ process.env.BOT_STATE_DIR ||= path.join(process.cwd(), 'bot', 'state-demo');
 
 const { load } = await import('./sdk/store.mjs');
 const { db } = await import('sdk');
-const { settings, drafts, notes, activity, secretaryChats, metrics } = await import('../tgcloud/schema.js');
+const { settings, drafts, notes, activity, secretaryChats, metrics, contactFacts } = await import('../tgcloud/schema.js');
 
 load();
 
@@ -35,6 +35,7 @@ for (const [key, value] of Object.entries({
   secretary_conns: '["demo-connection"]',
   quiet_start: '22',
   inline_mode: 'owner',
+  facts_learn: 'on',
   group_mode: 'on',
   quiet_end: '8',
   timezone: 'Europe/London',
@@ -106,6 +107,15 @@ await db.insert(secretaryChats).values([
   { chatId: 7778888, name: 'رضا', notes: 'Accountant. Invoices must be discussed with the office.', lang: 'fa', blocked: false, muted: false, ownerLastAt: 0, lastSeenAt: now - 900 },
   { chatId: 9990001, name: 'Nina', notes: '', lang: '', blocked: false, muted: false, ownerLastAt: now - 7000, lastSeenAt: now - 7200 },
   { chatId: 2468101, name: 'Crypto Promo', notes: '', lang: '', blocked: true, muted: false, ownerLastAt: 0, lastSeenAt: now - 40000 },
+]).run();
+
+// Facts learned from two of them, so the People tab has something to show (and
+// something to delete, which is the point of showing them).
+await db.delete(contactFacts).where(() => true).run();
+await db.insert(contactFacts).values([
+  { chatId: 5551234, text: 'Works night shifts at the children\u2019s hospital', kind: 'context', pinned: true, createdAt: now - 86400 },
+  { chatId: 5551234, text: 'Has a daughter named Ada, age 6', kind: 'context', pinned: false, createdAt: now - 86000 },
+  { chatId: 7778888, text: 'Prefers voice messages over text', kind: 'preference', pinned: false, createdAt: now - 4000 },
 ]).run();
 
 // A few measured replies, so the Speed card has numbers to show.

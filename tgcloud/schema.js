@@ -50,8 +50,29 @@ export const secretaryChats = table('secretary_chats', {
   lang:        text('lang').default(''),
   blocked:     boolean('blocked').default(false),
   lastSeenAt:  integer('last_seen_at').default(0),
+  // Learning throttle: how many messages have arrived since the last extraction,
+  // and when it last ran (unix seconds). Two integers instead of a model call per
+  // message — see lib/memory.js.
+  msgSinceFacts: integer('msg_since_facts').default(0),
+  factsAt:       integer('facts_at').default(0),
 }, (t) => ({
   seenIdx: index('idx_chats_seen').on(t.lastSeenAt, t.chatId),
+}));
+
+// Facts learned from a person's own messages (lib/memory.js).
+//
+// Kept apart from `secretary_chats.notes` on purpose: notes are the owner's, and
+// trusted. These are the sender's words, filtered for instructions and secrets,
+// and injected into the prompt under a label that says they are not instructions.
+export const contactFacts = table('contact_facts', {
+  id:      integer('id').primaryKey({ autoIncrement: true }),
+  chatId:  integer('chat_id').notNull(),
+  text:    text('text').notNull(),
+  kind:    text('kind').default('context'),
+  pinned:  boolean('pinned').default(false),
+  created: integer('created_at', { mode: 'timestamp' }).default(sql`(unixepoch())`),
+}, (t) => ({
+  chatIdx: index('idx_facts_chat').on(t.chatId, t.id),
 }));
 
 // Draft replies waiting for your approval (secretary mode = "draft").
