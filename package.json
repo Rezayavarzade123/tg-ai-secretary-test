@@ -1,7 +1,7 @@
 {
   "name": "tg-ai-secretary",
-  "version": "1.1.0",
-  "description": "A Telegram AI assistant and secretary that runs on your own machine with a small local model, or serverless with Ollama's hosted API.",
+  "version": "1.2.0",
+  "description": "A Telegram assistant and secretary that answers for you with a small local model on your own machine: drafts by default, a deterministic safety net, and an auto mode earned by testing the model you actually run.",
   "license": "MIT",
   "private": true,
   "type": "module",
