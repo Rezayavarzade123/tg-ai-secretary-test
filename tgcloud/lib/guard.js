@@ -10,7 +10,10 @@
 
 // "I am the owner" / "I'm the boss" — a claim of authority that is not a name.
 // Kept narrow on purpose: "I'm an automated assistant" must NOT be caught.
-const OWNER_CLAIM = /\b(i am|i'm|this is|it'?s|speaking as)\s+(the\s+)?(owner|boss|manager|admin|administrator|person in charge|authori[sz]ed|real [a-z]+)\b/gi;
+// No /g flag: the guard tests this regex on every outgoing message, and a global
+// regex remembers lastIndex between calls, so .test() would answer true, false,
+// true, false... and let every second impersonation through.
+const OWNER_CLAIM = /\b(i am|i'm|this is|it'?s|speaking as)\s+(the\s+)?(owner|boss|manager|admin|administrator|person in charge|authori[sz]ed|real [a-z]+)\b/i;
 
 // Commitments, prices, appointments, promises: things only the owner may decide.
 const COMMITMENT = [
@@ -79,8 +82,12 @@ export function guardOutgoing(answer, { ownerName = 'the owner', lang = 'en', ma
   }
 
   // 1. Claiming to be the owner. The owner's own name must never appear as "I am X".
+  //    "I'm Sam's automated assistant" is the sentence this whole project wants, so
+  //    the possessive form followed by the words that disclose is not a claim - it is
+  //    the opposite of one. Without this, the guard rewrites the honest reply too.
+  const notDisclosure = "(?!['’]s\\s+(?:automated\\s+|ai\\s+)?(?:assistant|secretary|bot|helper))";
   const namePattern = ownerName && ownerName !== 'the owner'
-    ? new RegExp(`\\b(i am|i'm|this is|it'?s)\\s+${escapeRe(ownerName)}\\b`, 'gi')
+    ? new RegExp(`\\b(i am|i'm|this is|it'?s)\\s+${escapeRe(ownerName)}\\b${notDisclosure}`, 'i')
     : null;
   if (namePattern && namePattern.test(text)) {
     reasons.push('identity');

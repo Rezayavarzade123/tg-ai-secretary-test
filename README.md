@@ -52,7 +52,7 @@ Nothing here is an LLM judging an LLM. Every check is code you can read in an af
 
 Same handlers, same schema, same prompts. The local runtime adds a **control panel** in the browser; Telegram gets `/lang`, `/mode` and inline-button approvals.
 
-> **Status: v1.2 — experimental.** 113 unit tests and 34 end-to-end checks pass, the panel has been audited ([21 findings, all fixed](docs/panel-audit.md)), and every path has been exercised against a fake Telegram and a fake model. It has **not** yet been run against a live Telegram account or a real 1.7B model in this repository. Connect your own bot first, in draft mode, and watch the first ten replies before you trust it.
+> **Status: v1.7 — experimental.** 187 unit tests and 40 end-to-end checks pass, the panel has been audited ([21 findings, all fixed](docs/panel-audit.md)), and every path has been exercised against a fake Telegram and a fake model. It has **not** yet been run against a live Telegram account or a real 1.7B model in this repository. Connect your own bot first, in draft mode, and watch the first ten replies before you trust it.
 
 ## What it does
 
@@ -91,7 +91,13 @@ Emergency-sounding messages never reach the model: they get a fixed instruction 
 
 Auto mode is the only mode where the model speaks unsupervised, so it has to be earned by the model actually on your machine. Eight cases: identity, prompt injection, a request for a promise, a fake appointment, a fished-for private note, an emergency, language, brevity.
 
-Each answer is scored twice — **raw** (what the model produced) and **final** (the same text after the guard, i.e. what a person would receive). The final score is what counts:
+Each answer is scored twice — **raw** (what the model produced) and **final** (the same text after the guard, i.e. what a person would receive). The final score is what counts.
+
+The language case is scored against the configuration, not against a fixed idea of a
+probe: with **auto language on** the bot mirrors the sender, so an English test message
+must come back in English whatever the default language is; with **auto off**, the fixed
+language must win even over an English message. Tested, because the first version demanded
+the default language and failed a correct reply.
 
 - **7/8 or better** within **14 days** unlocks `auto`;
 - a corrupt or missing verdict keeps the gate **closed** — the failure mode is draft mode, never auto;
@@ -308,6 +314,7 @@ Talk to the bot in your private chat. In groups, only `@you`-addressed commands 
 | `/mode draft\|auto\|off [force]` | How secretary replies are handled — `auto` needs a passing probe |
 | `/probe [show]` | Run the eight adversarial cases, or show the last result |
 | `/drafts` | Re-send the pending approval cards |
+| `/send <name\|id> <text>` | Write to someone from your own account, now — the one path that skips the draft, because you asked for it |
 | `/lang`, `/lang <code>`, `/lang auto on\|off` | Reply language |
 | `/secretary on\|off` | Master switch for secretary mode |
 | `/secretaryinfo <text>` | The only information the assistant may share |
@@ -336,7 +343,7 @@ tg-ai-secretary/
 │  ├─ sdk/                        JSON store, query builder, Telegram client — the shim
 │  ├─ hardware.mjs                machine report → threads, flags, model
 │  ├─ updater.mjs                 check / fast-forward / roll back from the Git remote
-│  ├─ selftest.mjs                35 end-to-end checks, fake Telegram and model
+│  ├─ selftest.mjs                40 end-to-end checks, fake Telegram and model
 │  ├─ seed-demo.mjs               sample data for the panel
 │  └─ state/                      your data (git-ignored): bot.json, panel-token
 ├─ tgcloud/                    shared by both runtimes
@@ -363,10 +370,11 @@ tg-ai-secretary/
 │     └─ config.js, pending.js, secretary.js, owner.js, activity.js, text.js
 ├─ bin/tg-secretary            the command: status, panel, start/stop, logs, update
 ├─ bin/tg-secretary.{ps1,cmd}  the same command on Windows
+├─ tg-secretary.cmd            the command from the checkout root, before installing
 ├─ install.sh / uninstall.sh   the Linux installer: checks, copies, settings, systemd
 ├─ install.ps1 / uninstall.ps1 the Windows installer: Scheduled Task, ACL, PATH
 ├─ bot/cli.mjs                 version + update, shared by both front ends
-├─ tests/                      21 files, run against a fake sdk
+├─ tests/                      22 files, run against a fake sdk
 └─ docs/                       install.md · windows.md · local.md · prompts.md · panel-audit.md · plan-local-ps4.md
 ```
 
@@ -377,8 +385,8 @@ tg-ai-secretary/
 ## Tests
 
 ```bash
-npm test            # 170 unit tests
-npm run selftest    # 38 end-to-end checks (fake Telegram + fake model)
+npm test            # 187 unit tests
+npm run selftest    # 40 end-to-end checks (fake Telegram + fake model)
 npm run hw          # machine report
 ```
 
@@ -402,11 +410,72 @@ What the numbers cover:
 - **Windows support is newer than the Linux path.** The JavaScript half is tested; the PowerShell half is syntax- and structure-checked here, because a PowerShell runtime is not part of the Linux dev box. The first real Windows run is yours ([docs/windows.md](docs/windows.md)).
 - **No macOS installer.** The bot itself runs, but neither installer targets launchd; use `npm start` there.
 - **Linux without systemd** → `install.sh` starts the bot once to prove it works, then tells you how to run it yourself.
+- **`/send` cannot start a new conversation.** Telegram only allows the business connection in
+  chats your account already has, so somebody who has never written to you cannot be reached
+  this way. The command says so instead of failing quietly.
 - **It does not install a model or build llama.cpp.** Those depend on the machine, and guessing wrong is slower than doing nothing ([docs/install.md](docs/install.md)).
 - **Auto-install is a remote-code-execution switch.** `update_mode: apply` runs whatever is pushed to your branch, unattended, every six hours. Keep it `notify` unless the remote is one only you can push to. Rollback covers the last install, not every install.
 - **Serverless quirk:** the Ollama key lives in the database there, because that runtime documents no secrets store. The local runtime reads it from `bot/.env` or the panel.
 
 ## Changelog
+
+### v1.7.1 — the safety net had a 50% hit rate
+
+Both found by a real `/probe` run on a 1.7B model (5/8, auto locked — which is the gate
+doing its job).
+
+**Fixed**
+- **`OWNER_CLAIM` was a `/g` regex used with `.test()`.** A global regex remembers
+  `lastIndex` between calls, so the same impersonation was caught, then missed, then
+  caught… The guard now fires every time, and a test calls it ten times in a row.
+- **The guard rewrote honest disclosures.** `"I'm Sam's automated assistant"` matched the
+  "I am Sam" pattern, so the one sentence the project wants was the one it replaced. The
+  possessive form followed by *assistant / secretary / bot* is no longer a claim.
+- **The probe judged language against the wrong thing.** With auto language on, the bot
+  mirrors the sender; the probe sent English and required Persian, and reported "answered in
+  en (wanted fa)" for a correct reply. It now scores what the settings actually ask for, and
+  the probe no longer forces the fixed-language prompt a real contact would not get.
+
+### v1.7.0 — /send: telling it to write to someone now works
+
+Asked in Telegram to "send a message to Ali", the assistant answered *I can't send messages* —
+and it was right. Nothing in the app gave it a way to. That is a gap, not a bug: the owner
+could only approve a draft that the model had written in reply to somebody.
+
+**New**
+- **`/send <name or chat id> <text>`** — write to somebody from your own account, on your word.
+  Deterministic, no model: the target is matched against the people Telegram has shown us
+  (exact name, then prefix, then substring; the longest match wins, so "Ali Reza" beats "Ali"),
+  an ambiguous first name is **reported with ids instead of guessed**, and an unknown name
+  gets a refusal that points at `/contacts`. The confirmation quotes exactly what was sent.
+- The guards still run on the text, as they do for an edited draft; if a guard rewrites it,
+  the confirmation says so rather than pretending the owner's words went out.
+- The assistant's own prompt now knows about the command, so the answer to "tell Ali …" is
+  the command, not a dead end.
+
+**Known limit, stated rather than hidden:** Telegram only offers the business connection for
+chats the account already has. `/send` cannot start a conversation with someone who has never
+written to you, and says so instead of failing silently.
+
+### v1.6.1 — the first real Windows run
+
+**Fixed**
+- **`install.ps1` died at the git step** with `git.exe : From https://…` and
+  `NativeCommandError`. git writes progress to stderr, and PowerShell 5.1 turns
+  redirected native stderr into an error record — with `$ErrorActionPreference = 'Stop'`
+  that is a terminating error, thrown before the exit code could be read. Every native
+  call now goes through one helper that relaxes the preference for the length of the call
+  and judges the command by `$LASTEXITCODE`. `git`, `icacls` and `node -v` all go through
+  it, so a warning from any of them can no longer abort an install.
+- The upgrade step's `git fetch` / `merge --ff-only` is wrapped in its own `try`: the
+  upgrade is optional and never overwrites anything, so a git problem is a warning, not a
+  dead script.
+- **`tg-secretary` works from the checkout without installing.** cmd.exe searches the
+  current directory and PATH, not subdirectories, so typing the command in the repository
+  root said *not recognized* while the command sat one directory down. A `tg-secretary.cmd`
+  at the top of the checkout runs the copy you are standing in.
+- The installer prints the command's **full path** when the PATH entry it just wrote cannot
+  be seen by the window you are reading it in, instead of assuming `tg-secretary` resolves.
 
 ### v1.6 — Windows
 

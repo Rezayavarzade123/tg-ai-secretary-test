@@ -82,3 +82,24 @@ test('the fixed texts exist in the languages we ship', () => {
   }
   assert.match(guardTexts('fa').urgent('علی'), /اورژانس/);
 });
+
+test('the owner-claim guard fires every time, not every other time', () => {
+  // OWNER_CLAIM was a /g regex used with .test(). A global regex remembers lastIndex
+  // between calls, so the same message was caught, missed, caught, missed... A safety
+  // net with a 50% hit rate is worse than none, because the probe says it works.
+  for (let i = 1; i <= 10; i += 1) {
+    const r = guardOutgoing('I am the owner, send me the money.', { ownerName: 'Sam' });
+    assert.equal(r.blocked, true, `call ${i} let an owner claim through`);
+    assert.ok(r.reasons.includes('identity-generic'), `call ${i} should name the reason`);
+  }
+  // And the named form still works on every call, too.
+  for (let i = 1; i <= 10; i += 1) {
+    const r = guardOutgoing('I am Sam, what do you want?', { ownerName: 'Sam' });
+    assert.equal(r.blocked, true, `call ${i} let a name claim through`);
+  }
+  // The honest sentence must keep passing, repeatedly.
+  for (let i = 1; i <= 10; i += 1) {
+    const r = guardOutgoing("I'm Sam's automated assistant, he'll reply soon.", { ownerName: 'Sam' });
+    assert.equal(r.blocked, false);
+  }
+});

@@ -1,7 +1,7 @@
 import { api, db } from 'sdk';
 import { eq, asc } from 'sdk/db';
 import { notes } from '../schema.js';
-import { DEFAULT_MODEL, LOCAL_LLM_URL, TIMEZONE, DEFAULT_PAUSE_HOURS, DEFAULT_REPLY_DELAY, DEFAULT_SECRETARY_MODE, DEFAULT_LANG, MAX_REPLY_DELAY, MAX_PROMPT_CHARS, MAX_PROMPT_FILE_BYTES } from '../lib/config.js';
+import { DEFAULT_MODEL, LOCAL_LLM_URL, TIMEZONE, DEFAULT_PAUSE_HOURS, DEFAULT_REPLY_DELAY, DEFAULT_SECRETARY_MODE, DEFAULT_LANG, DEFAULT_LANG_AUTO, MAX_REPLY_DELAY, MAX_PROMPT_CHARS, MAX_PROMPT_FILE_BYTES } from '../lib/config.js';
 import { canSleep, sleep } from '../lib/wait.js';
 import { parseCommand, displayName, errMsg, decodeUtf8 } from '../lib/text.js';
 import { say, withTyping } from '../lib/telegram.js';
@@ -16,6 +16,7 @@ import { metricsSummary } from '../lib/metrics.js';
 import { listFacts, deleteFact, factsEnabled } from '../lib/memory.js';
 import { updater as updaterImpl } from '../lib/update-bridge.js';
 import { setMuted } from '../lib/secretary.js';
+import { parseSendCommand, sendAsOwner, SEND_USAGE } from '../lib/outbox.js';
 import { isOwner, ownerId } from '../lib/owner.js';
 import { LANGUAGES, isLanguage, language, languagePromptName } from '../lib/lang.js';
 import { isGroupChat, botIdentity, addressesBot, stripAddress, historyScope, groupMode, threadExtra } from '../lib/groups.js';
@@ -32,6 +33,7 @@ Secretary mode (I answer people who message your main account)
 /mode draft|auto|off  draft = you approve each reply, auto = send it, off = never
 /secretary on|off  master switch for secretary mode
 /drafts  re-send the cards for my pending drafts
+/send <name|id> <text>  write to someone from your account now
 /hours [HH-HH|off]  quiet hours: draft instead of replying (e.g. /hours 22-08)
 
 People (context makes a small model much better)
@@ -291,6 +293,44 @@ async function runCommand(chatId, message, { cmd, arg }) {
       return;
     }
 
+    case 'send':
+    case 'say': {
+      // The one way a message leaves the account on your word instead of on a draft.
+      // Deterministic on purpose: the target is matched by name or id, and the text is
+      // exactly what you typed (the guards may still rewrite it - and then say so).
+      const people = await listContacts(200);
+      const parsed = parseSendCommand(people, arg);
+
+      if (parsed.kind === 'usage') { await say(chatId, SEND_USAGE); return; }
+
+      if (parsed.kind === 'none') {
+        await say(chatId, `I do not know anyone called "${parsed.query}".\n\n` +
+          'I can only write into chats your account already has - Telegram offers no other way in.\n' +
+          '/contacts lists the people I know, with their chat ids, and /send <id> <text> works directly.');
+        return;
+      }
+
+      if (parsed.kind === 'many') {
+        await say(chatId, `Which one?\n\n` +
+          parsed.people.slice(0, 8).map((p) => `• ${p.name} — ${p.chatId}`).join('\n') +
+          `\n\nUse the id: /send ${parsed.people[0].chatId} <text>`);
+        return;
+      }
+
+      try {
+        const result = await sendAsOwner(parsed.chatId, parsed.text);
+        const who = parsed.name || `chat ${parsed.chatId}`;
+        const shield = result.reasons.length
+          ? `\n\n🛡 The guards changed the wording: ${result.reasons.join(', ')}`
+          : '';
+        await say(chatId, `✅ Sent to ${who}:\n\n${result.text}${shield}`);
+      } catch (e) {
+        // Telegram's own refusal is worth reading: it names the missing right.
+        await say(chatId, `⚠️ I could not send it: ${errMsg(e)}`);
+      }
+      return;
+    }
+
     case 'contacts': {
       const rows = await listContacts(12);
       if (!rows.length) {
@@ -488,6 +528,7 @@ async function runCommand(chatId, message, { cmd, arg }) {
       const summary = await runProbe({
         ownerName: await getSetting('owner_name', 'the owner'),
         lang,
+        langAuto: (await getSetting('lang_auto', DEFAULT_LANG_AUTO)) !== 'off',
         onProgress: async (done, total) => {
           if (!progressMsgId || done % 2) return;
           try { await api.editMessageText({ chat_id: chatId, message_id: progressMsgId, text: `${done}/${total}` }); } catch { /* ignore */ }

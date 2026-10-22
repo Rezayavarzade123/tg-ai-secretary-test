@@ -119,11 +119,26 @@ function Test-Command($Name) { return [bool](Get-Command $Name -ErrorAction Sile
 
 function Invoke-Native {
     param([string] $File, [string[]] $Arguments, [string] $WorkingDirectory)
+    # A native tool writing to stderr is not a failure. git says "Cloning into ..."
+    # and "From https://..." on stderr, and PowerShell 5.1 turns redirected native
+    # stderr into error records: with $ErrorActionPreference = 'Stop' (set at the top
+    # of this file) that becomes a terminating NativeCommandError, thrown before
+    # $LASTEXITCODE can be read. The exit code is the verdict here, and the text is
+    # only ever shown when something actually fails.
+    # This assignment is local to the function; the caller's preference is untouched.
+    $ErrorActionPreference = 'Continue'
     $push = $false
     if ($WorkingDirectory) { Push-Location $WorkingDirectory; $push = $true }
     try {
         $output = & $File @Arguments 2>&1
-        return [pscustomobject]@{ Code = $LASTEXITCODE; Output = ($output -join "`n").Trim() }
+        $code = $LASTEXITCODE
+        if ($null -eq $code) { $code = 0 }
+        $text = (@($output) | ForEach-Object { [string]$_ }) -join "`n"
+        return [pscustomobject]@{ Code = $code; Output = $text.Trim() }
+    } catch {
+        # A missing executable or a refused start lands here; report it the same way
+        # as a non-zero exit, so callers only have one shape to handle.
+        return [pscustomobject]@{ Code = 1; Output = $_.Exception.Message }
     } finally {
         if ($push) { Pop-Location }
     }
@@ -170,7 +185,7 @@ $Node = Get-Command node -ErrorAction SilentlyContinue
 $NodePath = if ($Node) { $Node.Source } else { '' }
 $NodeVersion = $null
 if ($NodePath) {
-    $raw = (& $NodePath -v 2>$null)
+    $raw = (Invoke-Native $NodePath @('-v')).Output
     if ($raw -match 'v?(\d+\.\d+\.\d+)') { $NodeVersion = [version]$Matches[1] }
 }
 
@@ -190,7 +205,7 @@ if ($NodePath -and $NodeVersion -and $NodeVersion -ge $MinNode) {
             # A fresh install is not on this process's PATH yet.
             $env:Path = [Environment]::GetEnvironmentVariable('Path', 'Machine') + ';' + [Environment]::GetEnvironmentVariable('Path', 'User')
             $Node = Get-Command node -ErrorAction SilentlyContinue
-            if ($Node) { $NodePath = $Node.Source; $raw = (& $NodePath -v 2>$null); if ($raw -match 'v?(\d+\.\d+\.\d+)') { $NodeVersion = [version]$Matches[1] } }
+            if ($Node) { $NodePath = $Node.Source; $raw = (Invoke-Native $NodePath @('-v')).Output; if ($raw -match 'v?(\d+\.\d+\.\d+)') { $NodeVersion = [version]$Matches[1] } }
         }
     }
 
@@ -294,13 +309,13 @@ function Copy-Code([string] $Destination) {
             $null = robocopy $FromSource $Destination /E /NFL /NDL /NJH /NJS /NP `
                 /XD '.git' 'node_modules' '.tgcloud' 'bot\state' 'bot\state-demo' 'backups' `
                 /XF '.env' '*.log'
-            if ($LASTEXITCODE -ge 8) { throw "robocopy failed with exit code $LASTEXITCODE" }
+            if ($LASTEXITCODE -ge 8) { Write-Fail "robocopy failed with exit code $LASTEXITCODE.`n     Nothing was installed." }
         }
         return
     }
     Invoke-Step "git clone --depth 1 --branch $RepoBranch $RepoUrl $Destination" {
         $r = Invoke-Native 'git' @('clone', '--depth', '1', '--branch', $RepoBranch, $RepoUrl, $Destination)
-        if ($r.Code -ne 0) { throw "git clone failed: $($r.Output)" }
+        if ($r.Code -ne 0) { Write-Fail "git clone failed:$([Environment]::NewLine)$($r.Output)" }
     }
 }
 
@@ -316,12 +331,18 @@ if (Test-InstallDir $Dir) {
     if (Test-Path (Join-Path $Dir '.git')) {
         Write-Info 'Fast-forwarding the checkout (never a merge, never a reset)'
         Invoke-Step "git -C $Dir fetch --prune; git -C $Dir merge --ff-only origin/$RepoBranch" {
-            $fetch = Invoke-Native 'git' @('-C', $Dir, 'fetch', '--prune')
-            if ($fetch.Code -ne 0) { Write-Warn "git fetch failed; keeping the code that is there: $($fetch.Output)" }
-            $merge = Invoke-Native 'git' @('-C', $Dir, 'merge', '--ff-only', "origin/$RepoBranch")
-            if ($merge.Code -ne 0) {
-                Write-Warn 'Could not fast-forward: local changes, or your branch has moved.'
-                Write-Warn "Nothing was overwritten. Check: git -C `"$Dir`" status"
+            try {
+                $fetch = Invoke-Native 'git' @('-C', $Dir, 'fetch', '--prune')
+                if ($fetch.Code -ne 0) { Write-Warn "git fetch failed; keeping the code that is there: $($fetch.Output)" }
+                $merge = Invoke-Native 'git' @('-C', $Dir, 'merge', '--ff-only', "origin/$RepoBranch")
+                if ($merge.Code -ne 0) {
+                    Write-Warn 'Could not fast-forward: local changes, or your branch has moved.'
+                    Write-Warn "Nothing was overwritten. Check: git -C `"$Dir`" status"
+                }
+            } catch {
+                # The upgrade is optional and never overwrites anything, so a git that
+                # misbehaves must not take the whole install down with it.
+                Write-Warn "git could not be used here ($($_.Exception.Message)); keeping the code that is there."
             }
         }
     } else {
@@ -351,7 +372,7 @@ if (Test-InstallDir $Dir) {
         Write-Info "Cloning from $FromSource (keeps the history, so /update works)"
         Invoke-Step "git clone $FromSource $Dir, then point origin at $RepoUrl" {
             $clone = Invoke-Native 'git' @('clone', '--quiet', $FromSource, $Dir)
-            if ($clone.Code -ne 0) { throw "git clone failed: $($clone.Output)" }
+            if ($clone.Code -ne 0) { Write-Fail "git clone failed:$([Environment]::NewLine)$($clone.Output)" }
             $originOut = Invoke-Native 'git' @('-C', $FromSource, 'config', '--get', 'remote.origin.url')
             $target = if ($originOut.Code -eq 0 -and $originOut.Output -and $originOut.Output -ne $FromSource) { $originOut.Output } else { $RepoUrl }
             $null = Invoke-Native 'git' @('-C', $Dir, 'remote', 'set-url', 'origin', $target)
@@ -386,7 +407,7 @@ if (-not $TimeZone) {
     # and Node is a requirement here, so ask it instead of carrying a table.
     $TimeZone = 'UTC'
     try {
-        $tz = (& $NodePath -e "process.stdout.write(Intl.DateTimeFormat().resolvedOptions().timeZone)" 2>$null)
+        $tz = (Invoke-Native $NodePath @('-e', 'process.stdout.write(Intl.DateTimeFormat().resolvedOptions().timeZone)')).Output
         if ($tz -and $tz -match '^[A-Za-z]+/[A-Za-z_+-]+$') { $TimeZone = $tz.Trim() }
     } catch { }
     if ($env:BOT_TIMEZONE) { $TimeZone = $env:BOT_TIMEZONE }
@@ -427,10 +448,18 @@ function Protect-File([string] $Path) {
     # system, and Administrators. /inheritance:r with explicit grants is the
     # closest thing Windows has to chmod 600 for a service file.
     $user = "$env:USERDOMAIN\$env:USERNAME"
-    $null = & icacls $Path /inheritance:r 2>&1
-    $null = & icacls $Path /grant:r "${user}:(R)" 2>&1
-    $null = & icacls $Path /grant:r 'SYSTEM:(R)' 2>&1
-    $null = & icacls $Path /grant:r 'BUILTIN\Administrators:(F)' 2>&1
+    # Through Invoke-Native for the same reason as git: icacls reports a failure on
+    # stderr, and that must not abort the install as a NativeCommandError. A failure
+    # here is worth a warning, not a dead script.
+    foreach ($rule in @(
+        @($Path, '/inheritance:r'),
+        @($Path, '/grant:r', "${user}:(R)"),
+        @($Path, '/grant:r', 'SYSTEM:(R)'),
+        @($Path, '/grant:r', 'BUILTIN\Administrators:(F)')
+    )) {
+        $r = Invoke-Native 'icacls' $rule
+        if ($r.Code -ne 0) { Write-Warn "icacls $($rule[1]) failed: $($r.Output)" }
+    }
 }
 
 if (Test-Path $EnvFile) {
@@ -573,10 +602,12 @@ exit /b %errorlevel%
 # tg-secretary.cmd resolves from anywhere. A symlink would need elevation and does
 # not survive copying, which is why the PATH entry points at the real directory.
 Write-Step 'The tg-secretary command'
+$binDir = Join-Path $Dir 'bin'
+$CommandCmd = Join-Path $binDir 'tg-secretary.cmd'
+$PathWasAdded = $false
 if (-not $NoPath) {
-    $binDir = Join-Path $Dir 'bin'
     $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
-    if ($userPath -and ($userPath -split ';' | Where-Object { $_.TrimEnd('\') -ieq $binDir.TrimEnd('\') })) {
+    if ($userPath -and ($userPath -split ';' | Where-Object { $_ -and $_.TrimEnd('\') -ieq $binDir.TrimEnd('\') })) {
         Write-Ok "$binDir is already on your PATH"
     } else {
         Invoke-Step "add $binDir to the user PATH" {
@@ -584,11 +615,19 @@ if (-not $NoPath) {
             [Environment]::SetEnvironmentVariable('Path', $newPath, 'User')
         }
         Write-Ok "$binDir added to your PATH (new terminals only)"
-        Write-Info 'In this window it is not there yet; use the full path or open a new terminal.'
+        $PathWasAdded = $true
     }
+    # PATH is inherited at process start, so the window you are reading this in knows
+    # nothing about it. Add it here too, for anything run from this PowerShell session.
+    $env:Path = "$env:Path;$binDir"
 } else {
-    Write-Info "Skipped (-NoPath). The command is $Dir\bin\tg-secretary.cmd"
+    Write-Info "Skipped (-NoPath). The command is $CommandCmd"
 }
+
+# Whether this window can already type "tg-secretary" - a cmd.exe or a PowerShell that
+# was open before the installer ran cannot, and "not recognized" reads like a failure
+# when it is only a stale environment.
+$OnPathNow = [bool](($env:Path -split ';') | Where-Object { $_ -and ($_.TrimEnd('\') -ieq $binDir.TrimEnd('\')) })
 
 # --- 6. the model -------------------------------------------------------------
 
@@ -738,10 +777,17 @@ Write-Host '  2. Make sure the model server is running (above), then press "Try 
 Write-Host '     in the dashboard.'
 Write-Host ''
 Write-Host ' Later' -ForegroundColor White
-Write-Host '  tg-secretary status        is it running, and is the model server up'
-Write-Host '  tg-secretary panel         the panel URL with its token'
-Write-Host '  tg-secretary logs -f       follow the log'
-Write-Host '  tg-secretary update        check GitHub, then: update apply'
+if ($OnPathNow -and -not $PathWasAdded) {
+    Write-Host '  tg-secretary status        is it running, and is the model server up'
+    Write-Host '  tg-secretary panel         the panel URL with its token'
+    Write-Host '  tg-secretary logs -f       follow the log'
+    Write-Host '  tg-secretary update        check GitHub, then: update apply'
+} else {
+    Write-Host '  The command is on your PATH now, but this window was opened before that:' -ForegroundColor White
+    Write-Host "    `"$CommandCmd`" status"
+    Write-Host "    `"$CommandCmd`" panel"
+    Write-Host '  A newly opened terminal will find "tg-secretary" by itself.'
+}
 Write-Host "  Re-run this script with -Dir `"$Dir`" to upgrade."
 Write-Host '  .\uninstall.ps1 keeps your data; add -Purge to delete it.'
 Write-Host ''

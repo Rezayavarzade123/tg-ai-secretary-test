@@ -6,7 +6,7 @@ const { parseHour, parseWindow, hourIn, inQuietHours, describeWindow, hoursUntil
 const { contactPromptLine, langForContact, NOTES_LIMIT } = await import('../tgcloud/lib/contacts.js');
 const { updateContact, getContact, listContacts, markSeen, isBlocked } = await import('../tgcloud/lib/contacts.js');
 const { summarize, decorate, recordMetric, metricsSummary } = await import('../tgcloud/lib/metrics.js');
-const { probeVerdict, GATE_MIN_SCORE, GATE_MAX_AGE_DAYS, PROBE_TOTAL } = await import('../tgcloud/lib/probe.js');
+const { probeVerdict, GATE_MIN_SCORE, GATE_MAX_AGE_DAYS, PROBE_TOTAL, expectedLanguage, languageVerdict } = await import('../tgcloud/lib/probe.js');
 const { setSetting, delSetting } = await import('../tgcloud/lib/settings.js');
 const { systemPrompt } = await import('../tgcloud/lib/brain.js');
 
@@ -184,4 +184,41 @@ test('the auto-mode gate needs a recent, passing probe', async () => {
   assert.equal(v.ok, false);
 
   await delSetting('probe_last');
+});
+
+test('the probe judges language by what the settings actually ask for', () => {
+  // With auto language on, the bot mirrors the sender: an English message must be
+  // answered in English, whatever `lang` is set to. The old check demanded `lang`
+  // and failed a correct reply - which is what a real probe run reported as
+  // "answered in en (wanted fa)".
+  assert.equal(expectedLanguage({ lang: 'fa', langAuto: true }), 'en');
+  assert.equal(expectedLanguage({ lang: 'fa', langAuto: false }), 'fa');
+  assert.equal(expectedLanguage({ lang: 'en', langAuto: false }), 'en');
+
+  const english = 'Sure, I am around this afternoon.';
+  const persian = 'بله، امروز بعد از ظهر در دسترس هستم.';
+
+  // auto on: mirroring the sender is correct behaviour.
+  assert.equal(languageVerdict(english, { lang: 'fa', langAuto: true }).ok, true);
+  const drifted = languageVerdict(persian, { lang: 'fa', langAuto: true });
+  assert.equal(drifted.ok, false, 'auto mode should answer an English message in English');
+  assert.match(drifted.why, /wanted en/);
+  assert.match(drifted.why, /following the sender/);
+
+  // auto off: the fixed language must win, whatever the sender wrote.
+  assert.equal(languageVerdict(persian, { lang: 'fa', langAuto: false }).ok, true);
+  const wrong = languageVerdict(english, { lang: 'fa', langAuto: false });
+  assert.equal(wrong.ok, false);
+  assert.match(wrong.why, /wanted fa/);
+  assert.match(wrong.why, /fixed language/);
+
+  // English configured and English input: the right answer is still checked, so a
+  // model that drifts into another language is caught here too.
+  assert.equal(languageVerdict(english, { lang: 'en', langAuto: false }).ok, true);
+  assert.equal(languageVerdict(persian, { lang: 'en', langAuto: false }).ok, false);
+
+  // detectLang() gives null for plain English, because English is what "no
+  // distinctive script found" means. That must count as English, not as unknown.
+  assert.equal(languageVerdict('Yes.', { lang: 'en', langAuto: false }).ok, true);
+  assert.equal(languageVerdict('Yes.', { lang: 'fa', langAuto: false }).ok, false, 'a bare English word is still English');
 });

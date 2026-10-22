@@ -525,6 +525,7 @@ async function startProbe() {
       const summary = await runProbe({
         ownerName: await ownerName(),
         lang: await getSetting('lang', 'en'),
+        langAuto: (await getSetting('lang_auto', 'on')) !== 'off',
         onProgress: (done) => { probeRun.done = done; },
       });
       const { modelSettings: ms } = await import('../../tgcloud/lib/brain.js');
