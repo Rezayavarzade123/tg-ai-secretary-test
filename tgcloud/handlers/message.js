@@ -14,6 +14,7 @@ import { listContacts, getContact, updateContact, NOTES_LIMIT } from '../lib/con
 import { runProbe, saveProbe, formatProbe, probeVerdict, lastProbe } from '../lib/probe.js';
 import { metricsSummary } from '../lib/metrics.js';
 import { listFacts, deleteFact, factsEnabled } from '../lib/memory.js';
+import { updater as updaterImpl } from '../lib/update-bridge.js';
 import { setMuted } from '../lib/secretary.js';
 import { isOwner, ownerId } from '../lib/owner.js';
 import { LANGUAGES, isLanguage, language, languagePromptName } from '../lib/lang.js';
@@ -41,6 +42,11 @@ People (context makes a small model much better)
 /whatlearned <chat_id>  what I picked up from them, with ids
 /forgetfact <id>  delete one learned fact
 /learn on|off  learn facts from conversations at all
+
+Updates
+/update  is there a new version on GitHub?
+/update apply  install it and restart
+/update rollback  go back to the version that ran before
 
 Safety
 /probe  test the model against the questions it should fail safely (needed for auto)
@@ -346,6 +352,60 @@ async function runCommand(chatId, message, { cmd, arg }) {
         return;
       }
       await say(chatId, 'Usage: /contact <chat_id> note <text>  or  /contact <chat_id> lang <code|auto>');
+      return;
+    }
+
+    case 'update': {
+      // Updating needs git, a checkout and the power to restart this process, so it
+      // belongs to the local runtime and is registered there (lib/update-bridge.js).
+      // On Telegram Serverless there is nothing to register and nothing to update.
+      const impl = updaterImpl();
+      if (!impl) {
+        await say(chatId, 'Updating from GitHub only works on the local runtime. A serverless deployment is updated with npx tgcloud push.');
+        return;
+      }
+      const action = (arg || '').toLowerCase();
+
+      if (!action) {
+        const state = await impl.check();
+        const auto = (await getSetting('update_check', 'on')) !== 'off';
+        const install = await getSetting('update_mode', 'notify');
+        const lines = [
+          impl.describe(state),
+          state.version ? `Version ${state.version} (${state.branch} @ ${String(state.shortHead || state.head || '').slice(0, 7)})` : '',
+          auto ? 'Checks: automatic (every 6 hours)' : 'Checks: off',
+          install === 'apply' ? 'Installs: automatically (the bot restarts when it does)' : 'Installs: only when you ask',
+          '',
+          'Install: /update apply\nGo back: /update rollback',
+        ].filter((l) => l !== '');
+        await say(chatId, lines.join('\n'));
+        return;
+      }
+
+      if (action === 'apply') {
+        try {
+          const result = await impl.apply();
+          const list = (result.commits || []).slice(0, 5).map((c) => `• ${c.subject}`).join('\n');
+          await say(chatId, `${result.message}${list ? `\n\n${list}` : ''}${result.updated ? '\n\nRestarting — I will be back in a few seconds.' : ''}`);
+          if (result.updated) setTimeout(() => impl.restart('update from Telegram'), 3000);
+        } catch (e) {
+          await say(chatId, `Not updated: ${e.message}`);
+        }
+        return;
+      }
+
+      if (action === 'rollback') {
+        try {
+          const result = await impl.rollback();
+          await say(chatId, `${result.message}\nRestarting — I will be back in a few seconds.`);
+          setTimeout(() => impl.restart('rollback from Telegram'), 3000);
+        } catch (e) {
+          await say(chatId, `Could not roll back: ${e.message}`);
+        }
+        return;
+      }
+
+      await say(chatId, 'Usage: /update, /update apply, /update rollback');
       return;
     }
 

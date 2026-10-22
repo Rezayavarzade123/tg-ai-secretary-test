@@ -16,10 +16,13 @@ import { load, save, backup, getStateFile, acquireLock, releaseLock, externalWri
 import { getSetting, setSetting } from '../tgcloud/lib/settings.js';
 import { ownerId } from '../tgcloud/lib/owner.js';
 import { handleDraftCallback, countPendingDrafts } from '../tgcloud/lib/drafts.js';
+import { tellOwner } from '../tgcloud/lib/telegram.js';
 import { logActivity } from '../tgcloud/lib/activity.js';
 import { llmQueue } from '../tgcloud/lib/llm.js';
 import { runtime, noteUpdate, noteError, log, uptimeSeconds } from './runtime.mjs';
 import { startPanel } from './panel/server.mjs';
+import { createUpdater, decide, describeStatus } from './updater.mjs';
+import { setUpdaterImplementation } from '../tgcloud/lib/update-bridge.js';
 import messageHandler from '../tgcloud/handlers/message.js';
 import businessMessageHandler from '../tgcloud/handlers/business_message.js';
 import businessConnectionHandler from '../tgcloud/handlers/business_connection.js';
@@ -215,6 +218,77 @@ runtime.onTokenChange = async (token) => {
   return connectBot();
 };
 
+// --- updating ---------------------------------------------------------------------
+//
+// Checking is automatic and harmless; installing is a setting. The policy lives in
+// updater.mjs (and is unit-tested there); this is only the scheduling and the
+// reporting.
+const UPDATE_CHECK_MS = Math.max(15 * 60 * 1000, Number(process.env.UPDATE_CHECK_MINUTES ?? 360) * 60 * 1000);
+
+async function startUpdateLoop() {
+  const updater = createUpdater({ cwd: process.cwd() });
+  runtime.updater = updater;
+
+  // The handlers reach the updater through a portable bridge: `tgcloud/` must not
+  // import from `bot/`.
+  setUpdaterImplementation({
+    check: () => updater.check(),
+    status: () => updater.status(),
+    apply: () => updater.apply(),
+    rollback: (to) => updater.rollback(to),
+    describe: describeStatus,
+    restart: (why) => runtime.onRestart?.(why),
+  });
+
+  const tick = async (first = false) => {
+    try {
+      if ((await getSetting('update_check', 'on')) === 'off') return;
+      const state = await updater.check();
+      if ((await getSetting('update_branch', '')) && (await getSetting('update_branch', '')) !== state.branch) {
+        log('warn', `updates follow ${await getSetting('update_branch', '')}, but this checkout is on ${state.branch}`);
+      }
+
+      const mode = await getSetting('update_mode', 'notify');
+      const verdict = decide(mode, { ...state, paused: false });
+      if (verdict.action === 'none') {
+        if (verdict.reason !== 'already up to date' && !first) log('info', `update check: ${verdict.reason}`);
+        return;
+      }
+      if (verdict.action === 'blocked') {
+        log('warn', `update check: ${verdict.reason}`);
+        return;
+      }
+
+      const list = state.commits.slice(0, 5).map((c) => `• ${c.subject}`).join('\n');
+
+      if (verdict.action === 'notify') {
+        log('info', `update available: ${describeStatus(state)}`);
+        await tellOwner(
+          `⬆️ ${describeStatus(state)}\n${list}\n\n` +
+          'Nothing is installed automatically. In the control panel press Update, or send /update apply.'
+        ).catch(() => {});
+        return;
+      }
+
+      // verdict.action === 'apply'
+      log('info', `auto-updating: ${describeStatus(state)}`);
+      const result = await updater.apply();
+      await tellOwner(`⬆️ ${result.message}\n${list}\n\nRestarting to run it.`).catch(() => {});
+      log('info', result.message);
+      // Give the message a moment to leave: on slow hardware 1.5 s is not always enough.
+      setTimeout(() => runtime.onRestart?.('update installed'), 3000);
+    } catch (e) {
+      log('warn', `update check failed: ${e?.message ?? e}`);
+    }
+  };
+
+  runtime.checkForUpdates = () => tick(false);
+
+  // First check a minute in (let Telegram connect first), then every few hours.
+  setTimeout(() => void tick(true), 60 * 1000).unref?.();
+  setInterval(() => void tick(false), UPDATE_CHECK_MS).unref?.();
+}
+
 // --- start up ------------------------------------------------------------------
 
 async function main() {
@@ -290,6 +364,17 @@ async function main() {
   };
   process.on('SIGINT', () => void shutdown('SIGINT'));
   process.on('SIGTERM', () => void shutdown('SIGTERM'));
+
+  // An update finishes by restarting. Under systemd that is a clean exit and
+  // Restart=always brings it back on the new code; started by hand, it exits and
+  // says so. Either way state is saved and the lock released first, so the next
+  // process starts cleanly instead of fighting a stale lock.
+  runtime.onRestart = (why = 'requested') => {
+    log('info', `restarting (${why})${process.env.INVOCATION_ID ? ' — systemd will start it again' : ' — start it again to run the new code'}`);
+    void shutdown('restart');
+  };
+
+  startUpdateLoop();
   process.on('unhandledRejection', (e) => {
     noteError('unhandledRejection', e);
     log('error', `unhandled rejection: ${e?.message ?? e}`);

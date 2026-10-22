@@ -350,6 +350,69 @@ await check('context and a fixed language for one contact reach the prompt and t
   assert.equal(draft.lang, 'fa', 'the safety net uses the contact language too');
 });
 
+await check('the updater tells the truth about status, and refuses to touch a dirty tree', async () => {
+  const { createUpdater, decide, describeStatus } = await import('./updater.mjs');
+
+  // A fake git: the policy is what matters here. (The real fast-forward path is
+  // covered by tests/updater.test.mjs against two temporary repositories.)
+  const responses = {
+    '--version': { code: 0, stdout: 'git version 2.43.0' },
+    'rev-parse --show-toplevel': { code: 0, stdout: process.cwd() },
+    'rev-parse --abbrev-ref HEAD': { code: 0, stdout: 'main' },
+    'rev-parse HEAD': { code: 0, stdout: 'feedfacecafebeef0011' },
+    'status --porcelain': { code: 0, stdout: '' },
+    'remote get-url': { code: 0, stdout: 'https://github.com/me/bot.git' },
+    'rev-list --left-right': { code: 0, stdout: '0\t2' },
+    'log --pretty': { code: 0, stdout: 'aaa1111\x1fFix a thing\x1fSam\x1f2 hours ago' },
+    fetch: { code: 0, stdout: '' },
+  };
+  const run = async (args) => {
+    const key = args.slice(1).join(' ');
+    const hit = Object.keys(responses).find((k) => key.startsWith(k));
+    const v = hit ? responses[hit] : '';
+    return v && typeof v === 'object' ? v : { code: 0, stdout: v, stderr: '' };
+  };
+
+  const u = createUpdater({ cwd: process.cwd(), run });
+  const state = await u.check();
+  assert.equal(state.behind, 2);
+  assert.match(describeStatus(state), /2 new commit/);
+  assert.equal(decide('notify', state).action, 'notify', 'notify mode never installs on its own');
+  assert.equal(decide('apply', state).action, 'apply');
+
+  // With local changes, the same state must block, and apply must refuse before
+  // git is asked to merge anything.
+  responses['status --porcelain'] = { code: 0, stdout: ' M bot/panel/ui.js' };
+  const dirty = createUpdater({ cwd: process.cwd(), run });
+  const dirtyState = await dirty.status();
+  assert.equal(dirtyState.dirty, true);
+  assert.equal(decide('apply', dirtyState).action, 'blocked');
+  await assert.rejects(() => dirty.apply(), /local changes/);
+
+  // The /update command explains itself when the runtime cannot update.
+  const { setUpdaterImplementation } = await import('../tgcloud/lib/update-bridge.js');
+  setUpdaterImplementation(null);
+  const before = sent.length;
+  await botMessage({ message_id: 900, chat: { id: OWNER, type: 'private' }, from: { id: OWNER, first_name: 'Sam' }, text: '/update' });
+  assert.match(sent.at(-1).text, /only works on the local runtime/);
+  assert.ok(sent.length > before);
+
+  // And prints the status when it can (clean tree again: the case above dirtied it).
+  responses['status --porcelain'] = { code: 0, stdout: '' };
+  const clean = createUpdater({ cwd: process.cwd(), run });
+  setUpdaterImplementation({
+    check: () => clean.check(),
+    status: () => clean.status(),
+    apply: () => clean.apply(),
+    rollback: () => clean.rollback(),
+    describe: describeStatus,
+    restart: () => {},
+  });
+  await botMessage({ message_id: 901, chat: { id: OWNER, type: 'private' }, from: { id: OWNER, first_name: 'Sam' }, text: '/update' });
+  assert.match(sent.at(-1).text, /new commit|up to date/);
+  setUpdaterImplementation(null);
+});
+
 await check('it learns facts from people, and refuses to learn instructions', async () => {
   const { listFacts, deleteFact, clearFacts, parseFacts } = await import('../tgcloud/lib/memory.js');
   const { systemPrompt } = await import('../tgcloud/lib/brain.js');

@@ -21,7 +21,8 @@ Design reasoning, sizing numbers and the phased plan are in
 Telegram  ──long poll──►  bot/runner.mjs  ──►  tgcloud/handlers/*.js  ──►  lib/llm.js
                                │                                              │
                                ├── bot/panel (HTTP :8787)                     ▼
-                               └── bot/state/bot.json               llama-server :8080
+                               ├── bot/updater.mjs ──git──► GitHub   llama-server :8080
+                               └── bot/state/bot.json
                                                                     (Qwen3-1.7B Q4)
 ```
 
@@ -138,8 +139,32 @@ First run prints the panel URL and its access token. Two things to do immediatel
 2. Open the panel and press **Try the model** on the dashboard. A green
    "online · N ms" and a sensible answer means the whole chain works.
 
-For a service, use the unit in the README; put the token in `/etc/secretary.env`
-(mode 0600) rather than the repository.
+For a service, use this unit; put the token in `/etc/secretary.env` (mode 0600)
+rather than the repository:
+
+```ini
+# /etc/systemd/system/secretary.service
+[Unit]
+Description=Telegram AI secretary
+Wants=llama-server.service
+After=network-online.target llama-server.service
+
+[Service]
+Type=simple
+User=secretary
+WorkingDirectory=/opt/tg-ai-secretary     # a git clone, if you want /update
+EnvironmentFile=/etc/secretary.env
+ExecStart=/usr/bin/node --import ./bot/register.mjs bot/runner.mjs
+Restart=always                            # keeps /update restarts hands-free
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+```
+
+`Restart=always` is what makes an update or a rollback restart the bot by itself — the
+process saves state, releases its lock and exits 0, and systemd starts the new code.
+Without it, `/update` still works but tells you to start the bot again.
 
 ## 5. Connect your account (secretary mode)
 
@@ -333,6 +358,40 @@ Numbers come only from what the server reports (`timings` from `llama-server`,
 `prompt_eval_*` from Ollama, or `usage` from an OpenAI-compatible endpoint). A call with
 no timings is stored as untimed and excluded from the averages, never estimated.
 
+### 6e. Updates from GitHub
+
+The bot can update itself from the Git remote it was cloned from. Checking is free and
+automatic; installing is your decision.
+
+| Setting | Default | Where |
+|---|---|---|
+| `update_check` | `on` | Setup → Updates |
+| `update_mode` | `notify` | Setup → Updates → *Install automatically* |
+| `UPDATE_CHECK_MINUTES` | `360` | environment (minimum 15) |
+
+```bash
+/update              # installed version, commits waiting on the remote
+/update apply        # fast-forward the checkout, then restart
+/update rollback     # back to the commit that ran before the last install
+```
+
+What it will not do:
+
+- It will not update without git, outside a Git checkout, with uncommitted changes to
+  tracked files, on a diverged branch, or in the middle of a merge/rebase. Every refusal
+  names the reason (`/update` prints it; the panel shows it in red).
+- It never merges: only `git merge --ff-only`. If your branch and the remote have both
+  moved, it stops and tells you.
+- It never hides a rollback: the previous commit is recorded at apply time, rollback is
+  `git reset --hard <that commit>`, and it refuses when the tree is dirty.
+
+`update_mode: apply` means *whatever is pushed to your branch runs here, unattended*.
+Leave it at `notify` unless only you can push there. Your data (`bot/state/`, ignored by
+git) is never touched by an update or a rollback.
+
+If you installed with `npx tgcloud`, there is nothing to update locally — `/update` says
+so, because the runtime is Telegram's.
+
 ## 7. Data, backups, privacy
 
 - Everything is in **`bot/state/bot.json`** (plus `panel-token`). Copy that file and you
@@ -382,6 +441,16 @@ console differs from a PC. The software above does not care.
 | Panel: "`bot.json` was changed on disk" | something else wrote the state file | stop every other copy; restore from `bot/state/backups/` if data looks wrong |
 | Panel: "Too many wrong tokens" | login throttle after 8 failures | wait 5 minutes |
 | The 5-second refresh seems to pause | by design: it stops while you have unsaved edits | press Save, or click Refresh |
+
+### Updates
+
+| Symptom | Cause and fix |
+|---|---|
+| `/update` says *only works on the local runtime* | It is running from `npx tgcloud`; there is no local checkout to update |
+| *not a git checkout* | The bot was copied, not cloned. `git clone` it, copy `bot/state/` across, start there |
+| *there are local changes in the checkout* | `git status` — commit or discard them. The updater will not overwrite tracked files |
+| *your branch has commits the remote does not* | Pull/merge by hand once; after that `--ff-only` applies again |
+| installed, but nothing changed | Under systemd, `Restart=always` makes it automatic; started by hand, start it again. `/update` reports the new commit once it is running |
 
 ## 10. Security checklist
 

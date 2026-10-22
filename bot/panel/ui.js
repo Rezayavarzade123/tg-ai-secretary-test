@@ -14,6 +14,8 @@ const S = {
   activity: [],
   log: [],
   contacts: [],
+  update: null,       // GitHub update status, loaded on demand
+  updateBusy: false,
   test: null,        // result of "try the model", kept across refreshes
   dirty: false,      // an unsaved edit is on screen: do not re-render under the user
 };
@@ -102,6 +104,7 @@ async function refresh({ quiet = true } = {}) {
     if (S.tab === 'drafts') S.drafts = (await api(`/api/drafts?status=${encodeURIComponent(S.draftStatus)}`)).drafts;
     if (S.tab === 'notes') S.notes = (await api('/api/notes')).notes;
     if (S.tab === 'people') await loadContacts();
+    if (S.tab === 'setup' && !S.update) await loadUpdate(false);
     if (S.tab === 'prompts') S.prompts = await api('/api/prompts');
     if (S.tab === 'activity') {
       S.activity = (await api('/api/activity')).activity;
@@ -113,6 +116,36 @@ async function refresh({ quiet = true } = {}) {
     if (!quiet) toast(e.message, true);
     else console.warn(e);
   }
+}
+
+// Reload the update card. `check` also asks GitHub; without it we only read the
+// last measured state, so opening the Setup tab costs nothing.
+async function loadUpdate(check = false) {
+  try {
+    S.update = check
+      ? { ...(await api('/api/update', { method: 'POST', body: JSON.stringify({ action: 'check' }) })), ...(await api('/api/update')) }
+      : await api('/api/update');
+  } catch (e) {
+    S.update = null;
+  }
+  if (S.tab === 'setup') render();
+}
+
+// After an update the process exits and comes back on new code. Poll until it
+// answers again, then reload so the page is not running yesterday's script.
+function waitForRestart() {
+  let tries = 0;
+  const timer = setInterval(async () => {
+    tries += 1;
+    try {
+      const r = await fetch('/api/ping', { credentials: 'same-origin' });
+      if (r.ok) {
+        clearInterval(timer);
+        location.reload();
+      }
+    } catch { /* still down */ }
+    if (tries > 60) clearInterval(timer);
+  }, 1000);
 }
 
 async function loadContacts() {
@@ -641,6 +674,67 @@ function viewActivity() {
   </div>`;
 }
 
+// Updates. Checking is safe and automatic; installing is a button, or an explicit
+// setting, because this pulls code from GitHub and runs it.
+function updateCard(s) {
+  const u = S.update;
+  if (!u) {
+    return `
+    <div class="card">
+      <h2>Updates</h2>
+      <p class="hint">The updater runs inside the bot process, so this card fills in when the bot is running (not when you are only looking at a static demo).</p>
+      <button type="button" id="updateRefresh">Check now</button>
+    </div>`;
+  }
+
+  const st = u.state || {};
+  const behind = Number(st.behind || 0);
+  const commits = (st.commits || []).slice(0, 5);
+  const upToDate = Boolean(st.isRepo) && !st.error && !behind && !st.diverged;
+
+  return `
+    <div class="card">
+      <h2>Updates</h2>
+      <p class="hint">Fetches from GitHub and, when you say so, fast-forwards the checkout and restarts. It refuses to touch a checkout with local changes or a diverged branch.</p>
+
+      <div class="row" style="margin-bottom:8px">
+        <span class="tag ${upToDate ? 'ok' : st.error || st.dirty || st.diverged ? 'bad' : 'warn'}">${upToDate ? 'up to date' : esc(st.isRepo === false ? 'not a checkout' : behind ? `${behind} behind` : 'needs attention')}</span>
+        <span class="small muted">${esc(u.summary || '')}</span>
+      </div>
+
+      <p class="small muted" style="margin:0 0 8px">
+        version ${esc(st.version || '?')} · ${esc(st.branch || '?')} @ ${esc(st.shortHead || '?')}
+        ${st.fetchedAt ? ` · checked ${fmtAgo(st.fetchedAt)}` : ''}
+        ${st.originUrl ? ` · ${esc(st.originUrl)}` : ''}
+      </p>
+
+      ${commits.length ? `<div class="banner info" style="margin:0 0 8px">
+        <strong>What is waiting</strong>
+        ${commits.map((c) => `<div class="small">• ${esc(c.subject)} <span class="muted">${esc(c.author)}, ${esc(c.when)}</span></div>`).join('')}
+        ${behind > commits.length ? `<div class="small muted">…and ${behind - commits.length} more</div>` : ''}
+      </div>` : ''}
+
+      ${st.dirty ? `<div class="banner bad" style="margin:0 0 8px">Local changes in the checkout. An update would overwrite them, so it is refused. Commit or discard them first.</div>` : ''}
+      ${st.diverged ? `<div class="banner bad" style="margin:0 0 8px">Your branch has commits the remote does not. Update by hand.</div>` : ''}
+      ${st.error ? `<div class="banner bad" style="margin:0 0 8px">${esc(st.error)}</div>` : ''}
+      ${u.lastApply && u.lastApply.ok ? `<div class="banner ok" style="margin:0 0 8px">Installed ${esc(String(u.lastApply.from || '').slice(0, 7))} → ${esc(String(u.lastApply.to || '').slice(0, 7))} at ${fmtAgo(u.lastApply.at)}.</div>` : ''}
+
+      <div class="row">
+        <button type="button" id="updateRefresh" ${S.updateBusy ? 'disabled' : ''}>Check now</button>
+        <button type="button" class="primary" id="updateApply" ${(!behind || S.updateBusy || st.dirty || st.diverged) ? 'disabled' : ''}>Update and restart</button>
+        ${u.lastApply && u.lastApply.ok ? '<button type="button" id="updateRollback">Roll back</button>' : ''}
+      </div>
+
+      <div class="row" style="justify-content:space-between;margin-top:10px">
+        <div>
+          <div>Install automatically</div>
+          <div class="small muted">Check every six hours and install without asking. Only for a checkout you control: this runs whatever is pushed to ${esc(st.remote || 'origin')}/${esc(st.branch || 'main')}.</div>
+        </div>
+        ${toggle('autoUpdateSw', u.mode === 'apply', 'Install updates automatically')}
+      </div>
+    </div>`;
+}
+
 function viewSetup() {
   const st = S.state;
   const s = st.settings || {};
@@ -681,6 +775,8 @@ function viewSetup() {
         <button type="button" class="primary" id="saveTelegram">Save</button>
       </div>
     </div>
+
+    ${updateCard(s)}
 
     <div class="card">
       <h2>Model server</h2>
@@ -849,6 +945,50 @@ function wire() {
       } catch (e) { toast(e.message, true); }
     };
   });
+  const updateRefresh = $('#updateRefresh');
+  if (updateRefresh) updateRefresh.onclick = () => loadUpdate(true);
+
+  const updateApply = $('#updateApply');
+  if (updateApply) {
+    updateApply.onclick = async () => {
+      if (!window.confirm('Install the update and restart the bot? It will be unavailable for a few seconds.')) return;
+      S.updateBusy = true;
+      render();
+      try {
+        const r = await api('/api/update', { method: 'POST', body: JSON.stringify({ action: 'apply' }) });
+        toast(r.note || r.message);
+        if (r.restarting) {
+          toast('Installed — waiting for the bot to come back…', false);
+          waitForRestart();
+          return;
+        }
+        await loadUpdate(true);
+      } catch (e) {
+        toast(e.message, true);
+      } finally {
+        S.updateBusy = false;
+      }
+    };
+  }
+
+  const updateRollback = $('#updateRollback');
+  if (updateRollback) {
+    updateRollback.onclick = async () => {
+      if (!window.confirm('Go back to the version that was running before the last update? The bot will restart.')) return;
+      try {
+        const r = await api('/api/update', { method: 'POST', body: JSON.stringify({ action: 'rollback' }) });
+        toast(r.message);
+        waitForRestart();
+      } catch (e) { toast(e.message, true); }
+    };
+  }
+
+  bindToggle('autoUpdateSw', async (on) => {
+    await saveSettings({ update_mode: on ? 'apply' : 'notify' }, on
+      ? 'Updates will install automatically and the bot will restart'
+      : 'Updates are checked, never installed without you');
+  });
+
   bindToggle('learnSw', (on) => saveSettings({ facts_learn: on ? 'on' : 'off' }, on
     ? 'Learning from conversations is on'
     : 'Learning from conversations is off'));

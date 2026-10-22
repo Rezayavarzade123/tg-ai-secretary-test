@@ -13,7 +13,9 @@ export const runtime = {
   panelAvailable: true, // false when the port could not be bound
   log: [],              // last N log lines, for the panel
   onTokenChange: null,  // set by runner.mjs
-  onRestart: null,
+  onRestart: null,      // set by runner.mjs: save, release the lock, exit
+  updater: null,        // set by runner.mjs: check / apply / rollback
+  checkForUpdates: null,
 };
 
 export function noteUpdate(kind) {

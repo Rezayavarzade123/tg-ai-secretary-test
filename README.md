@@ -23,6 +23,7 @@ cd tg-ai-secretary && npm start
 - [Quick start](#quick-start)
 - [The model, and the machine it runs on](#the-model-and-the-machine-it-runs-on)
 - [The control panel](#the-control-panel)
+- [Updating](#updating)
 - [Commands](#commands)
 - [How it is built](#how-it-is-built)
 - [Tests](#tests)
@@ -133,6 +134,9 @@ A feature that learns from people can be turned into a permanent instruction by 
 - **Speed metrics** — every model call records tokens, prefill ms and decode ms, taken only from what the server reports. The dashboard shows last, average and tokens/second, and warns when the machine is slow. A call with no timings is counted as untimed, never estimated.
 - **`npm run hw`** — reads `/proc/cpuinfo` and `/proc/meminfo` and derives threads, build flags, model and the exact `llama-server` line. It never looks at the machine's name; two CPUs with the same flags get the same advice.
 
+**Staying current**
+- **Updates from GitHub**, opt-in by default: it checks on a schedule and tells you what is waiting, and installs only when you say so (or when you turn on auto-install, knowing it runs whatever is pushed). Fast-forward only, refuses a dirty or diverged checkout, and rolls back to the commit that ran before. See [Updating](#updating).
+
 **Language**
 - `/lang fa` fixes the reply language; `/lang auto on` follows whoever writes. Detection is local and dependency-free (script test + stop-words), so a small model can't drift into English halfway through.
 - The language line is part of the prompt, not an afterthought, and a per-contact override wins over both.
@@ -202,13 +206,38 @@ Linux on a PS4 is Linux — there is no console build, no console branch and no 
 | **Drafts** | every pending reply, editable, Send / Regenerate / Ignore |
 | **People** | per-person context, language, block, and what the bot learned about them |
 | **Prompts** | custom or default prompt per mode; the security line is always added by code |
-| **Notes**, **Activity**, **Setup** | your notes, the event log, bot token / owner / model server / timezone / group + inline switches |
+| **Notes**, **Activity**, **Setup** | your notes, the event log, bot token / owner / model server / timezone / group + inline switches, and the **Updates** card (check, install, roll back, auto-install switch) |
 
 It writes the same `settings` rows the Telegram commands write, so the two front doors cannot disagree.
 
 **Security.** The panel is for your LAN. It prints a random token at first run (`bot/state/panel-token`, or `PANEL_TOKEN`), requires it on every call, throttles wrong guesses, sends a strict CSP with `frame-ancestors 'none'`, and refuses cross-origin writes. It binds to `0.0.0.0:8787`; set `PANEL_HOST=127.0.0.1` to keep it local, and reach it over SSH rather than port-forwarding it. It is a control surface for an account that can send messages as you. The audit — 21 findings, each fixed with a test — is in **[docs/panel-audit.md](docs/panel-audit.md)**.
 
 **Demo without a bot.** `npm run demo` writes sample data to `bot/state-demo/`; a panel running against that directory recognises it as a demo, signs itself in, and labels itself. Real instances always ask for the token.
+
+## Updating
+
+The bot updates from the same Git remote it was cloned from. That is a **remote-code-execution path** — whatever is pushed there runs on your machine — so the safe default is to look, not to install.
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `update_check` | `on` | Ask GitHub every six hours, and tell you what is waiting |
+| `update_mode` | `notify` | `off` · `notify` (tell me) · `apply` (install and restart) |
+
+```bash
+/update              # what is on GitHub, and what is installed
+/update apply        # fast-forward this checkout and restart
+/update rollback     # go back to the commit that ran before the last update
+```
+
+The same three actions are a card in the panel's **Setup** tab, with the commit subjects, the version, and the mode switch.
+
+**What it refuses to do.** No update happens unless all of these hold: git is installed, the directory is a Git checkout, the tree is clean (`--untracked-files=no`, so your notes and `bot/state/` are irrelevant), the branch is not diverged, and no merge or rebase is in progress. It only ever does `git merge --ff-only` — a real merge is a decision for you. Refusals say which condition failed. Without a Git checkout or without git, `/update` says so instead of pretending to be current.
+
+**Rollback.** Every apply records `{from, to}`. Rollback is `git reset --hard <from>` — it refuses on a dirty tree and refuses when nothing was recorded, so it cannot be used as a "throw away my work" button. The old commit is still on your remote, so it is also recoverable by hand.
+
+**After installing**, the process exits cleanly (state saved, lock released) and the new code starts on the next start. Under systemd with `Restart=always` that is automatic; started by hand, you start it again. The panel waits for the process to answer, then reloads; `/update` tells you the same thing in the chat.
+
+**On slow hardware** the check is one `git fetch`: a few kilobytes of negotiation. Automatic checks run off the model queue and never touch it.
 
 ## Commands
 
@@ -237,6 +266,7 @@ Talk to the bot in your private chat. In groups, only `@you`-addressed commands 
 | `/remember <text>`, `/notes`, `/forget <id>` | Private notes (bot mode only) |
 | `/reset` | Clear bot-mode memory |
 | `/prompt bot\|secretary [show\|default\|reset\|append <text>\|<text>]` | View or replace a system prompt ([docs/prompts.md](docs/prompts.md)) |
+| `/update`, `/update apply`, `/update rollback` | What is on GitHub, install it, undo the last install ([Updating](#updating)) |
 | `/panel`, `/model [name]`, `/setkey`, `/id`, `/waittest` | Setup and diagnostics |
 
 ## How it is built
@@ -248,7 +278,8 @@ tg-ai-secretary/
 │  ├─ panel/                      control panel: server.mjs + ui.html/js/css (no build)
 │  ├─ sdk/                        JSON store, query builder, Telegram client — the shim
 │  ├─ hardware.mjs                machine report → threads, flags, model
-│  ├─ selftest.mjs                34 end-to-end checks, fake Telegram and model
+│  ├─ updater.mjs                 check / fast-forward / roll back from the Git remote
+│  ├─ selftest.mjs                35 end-to-end checks, fake Telegram and model
 │  ├─ seed-demo.mjs               sample data for the panel
 │  └─ state/                      your data (git-ignored): bot.json, panel-token
 ├─ tgcloud/                    shared by both runtimes
@@ -271,8 +302,9 @@ tg-ai-secretary/
 │     ├─ groups.js                who is being addressed
 │     ├─ llm.js                   local + cloud adapters, usage extraction
 │     ├─ lang.js                  language registry and detection
+│     ├─ update-bridge.js        lets the handlers reach the local updater
 │     └─ config.js, pending.js, secretary.js, owner.js, activity.js, text.js
-├─ tests/                      18 files, run against a fake sdk
+├─ tests/                      19 files, run against a fake sdk
 └─ docs/                       local.md · prompts.md · panel-audit.md · plan-local-ps4.md
 ```
 
@@ -283,15 +315,15 @@ tg-ai-secretary/
 ## Tests
 
 ```bash
-npm test            # 113 unit tests
-npm run selftest    # 34 end-to-end checks (fake Telegram + fake model)
+npm test            # 124 unit tests
+npm run selftest    # 35 end-to-end checks (fake Telegram + fake model)
 npm run hw          # machine report
 ```
 
 What the numbers cover:
 
-- **unit** — text handling, prompts, reply delay, typing indicator, language detection, the guard, the local query builder, panel settings validation, the v1.2 features (contacts, quiet hours, probe, metrics), machine detection, group addressing, inline payloads, the learning filter, and static checks on the panel's own front end (every wired id must exist, every tab must render, the session must survive a cookie-less proxy).
-- **selftest** — drives real messages through the real handlers: a draft is created and approved, the guard replaces a promise, an urgent message never reaches the model, a blocked contact costs no model call, quiet hours turn an auto reply into a draft, the probe gate locks and unlocks auto, group messages are answered only when addressed, inline burst-debouncing, and the learning pass refusing an instruction and a verification code.
+- **unit** — text handling, prompts, reply delay, typing indicator, language detection, the guard, the local query builder, panel settings validation, the v1.2 features (contacts, quiet hours, probe, metrics), machine detection, group addressing, inline payloads, the learning filter, the updater's policy (modes, refusal conditions, parsing a behind/ahead count) and its real-git paths against two temporary repositories — fast-forward, rollback, a dirty tree, a diverged branch — and static checks on the panel's own front end (every wired id must exist, every tab must render, the session must survive a cookie-less proxy).
+- **selftest** — drives real messages through the real handlers: a draft is created and approved, the guard replaces a promise, an urgent message never reaches the model, a blocked contact costs no model call, quiet hours turn an auto reply into a draft, the probe gate locks and unlocks auto, group messages are answered only when addressed, inline burst-debouncing, the learning pass refusing an instruction and a verification code, and `/update` telling the truth about status while refusing to touch a dirty checkout.
 
 ## Known limits
 
@@ -305,9 +337,21 @@ What the numbers cover:
 - **Text only** — photos, voice and stickers are announced to you, not answered. Replies are plain text.
 - **The panel is plain HTTP with one shared token**, no user accounts. Fine on a home LAN; use `PANEL_HOST=127.0.0.1` behind an SSH tunnel if the network isn't yours.
 - **One bot per state directory** — a lock file refuses a second copy.
+- **Auto-install is a remote-code-execution switch.** `update_mode: apply` runs whatever is pushed to your branch, unattended, every six hours. Keep it `notify` unless the remote is one only you can push to. Rollback covers the last install, not every install.
 - **Serverless quirk:** the Ollama key lives in the database there, because that runtime documents no secrets store. The local runtime reads it from `bot/.env` or the panel.
 
 ## Changelog
+
+### v1.3 — updates from GitHub, on your terms
+
+**New**
+- **Auto updater** (`bot/updater.mjs`): checks the Git remote on a schedule, reports the new commit subjects, and installs only when told to — or automatically if you explicitly ask for that.
+- **`/update`**, `/update apply`, `/update rollback`, and an **Updates** card in the panel's Setup tab.
+- Refusals instead of guesses: no git, not a checkout, local changes, diverged branch, merge in progress. `--ff-only` only.
+- Rollback to the commit that ran before the last install, recorded at apply time.
+
+**Fixed**
+- An update check showed the whole branch log rather than the commits you do not have yet, so a checkout 2 behind reported 3 changed commits.
 
 ### v1.2 — the "earn it" release
 

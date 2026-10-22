@@ -37,6 +37,7 @@ import { getStateFile, stats, backup, lockInfo } from '../sdk/store.mjs';
 import { inspect as inspectMachine } from '../hardware.mjs';
 import { verifyToken } from '../sdk/telegram.mjs';
 import { runtime, uptimeSeconds, log } from '../runtime.mjs';
+import { decide, describeStatus, readVersion } from '../updater.mjs';
 
 // The machine report changes only when the hardware does (i.e. never), so it is
 // read once a minute instead of on every poll.
@@ -368,6 +369,15 @@ function validateSetting(key, rawValue) {
     case 'secretary':
       if (!['on', 'off'].includes(value)) throw bad('secretary must be on or off');
       return value;
+    case 'update_check':
+      if (!['on', 'off'].includes(value)) throw bad('update_check must be on or off');
+      return value;
+    case 'update_mode':
+      if (!['off', 'notify', 'apply'].includes(value)) throw bad('update_mode must be off, notify or apply');
+      return value;
+    case 'update_branch':
+      if (value && !/^[\w./-]{1,100}$/.test(value)) throw bad('That is not a branch name.');
+      return value;
     case 'inline_mode':
       // "owner" = the owner can use @bot in any chat; anyone else gets nothing.
       // There is no public mode on purpose: the bot prompt holds private notes.
@@ -542,7 +552,9 @@ async function buildState() {
   const draftCount = await countPendingDrafts().catch(() => 0);
 
   return {
-    version: '1.1.1',
+    // Read, never hand-maintained: the panel used to announce 1.1.1 while the
+    // package said something else.
+    version: readVersion(path.join(HERE, '..', '..')) || '',
     now: Date.now(),
     uptime: uptimeSeconds(),
     pid: process.pid,
@@ -813,6 +825,71 @@ async function handleApi(req, res, url) {
     const chatId = Number(url.pathname.split('/')[3]);
     await clearFacts(chatId);
     return json(res, 200, { ok: true });
+  }
+
+  if (route === 'GET /api/update') {
+    const updater = runtime.updater;
+    if (!updater) throw bad('The updater is not running in this process.');
+    const state = await updater.status();
+    const mode = await getSetting('update_mode', 'notify');
+    return json(res, 200, {
+      state,
+      summary: describeStatus(state),
+      mode,
+      autoCheck: (await getSetting('update_check', 'on')) !== 'off',
+      branch: await getSetting('update_branch', ''),
+      lastCheck: updater.lastCheck,
+      lastApply: updater.lastApply,
+      verdict: decide(mode, state),
+    });
+  }
+
+  if (route === 'POST /api/update') {
+    const updater = runtime.updater;
+    if (!updater) throw bad('The updater is not running in this process.');
+    const action = String(body.action || 'check');
+
+    if (action === 'check') {
+      const state = await updater.check();
+      log('info', `update check from the panel: ${describeStatus(state)}`);
+      return json(res, 200, { ok: true, state, summary: describeStatus(state) });
+    }
+
+    if (action === 'apply') {
+      let result;
+      try {
+        result = await updater.apply();
+      } catch (e) {
+        throw bad(e.message);
+      }
+      log('info', `update applied from the panel: ${result.message}`);
+      if (result.updated) {
+        // Answer the request first: the process exits a moment later.
+        setTimeout(() => runtime.onRestart?.('update installed from the panel'), 2000);
+      }
+      return json(res, 200, {
+        ok: true,
+        ...result,
+        restarting: result.updated,
+        note: result.updated
+          ? 'Installed. The bot is restarting to run the new code.'
+          : 'Nothing to install.',
+      });
+    }
+
+    if (action === 'rollback') {
+      let result;
+      try {
+        result = await updater.rollback(body.to);
+      } catch (e) {
+        throw bad(e.message);
+      }
+      log('warn', `rollback from the panel: ${result.message}`);
+      setTimeout(() => runtime.onRestart?.('rollback'), 2000);
+      return json(res, 200, { ok: true, ...result, restarting: true });
+    }
+
+    throw bad('Unknown action. Use check, apply or rollback.');
   }
 
   if (route === 'GET /api/metrics') {
