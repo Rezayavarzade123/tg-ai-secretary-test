@@ -52,7 +52,7 @@ Nothing here is an LLM judging an LLM. Every check is code you can read in an af
 
 Same handlers, same schema, same prompts. The local runtime adds a **control panel** in the browser; Telegram gets `/lang`, `/mode` and inline-button approvals.
 
-> **Status: v1.7 — experimental.** 187 unit tests and 40 end-to-end checks pass, the panel has been audited ([21 findings, all fixed](docs/panel-audit.md)), and every path has been exercised against a fake Telegram and a fake model. It has **not** yet been run against a live Telegram account or a real 1.7B model in this repository. Connect your own bot first, in draft mode, and watch the first ten replies before you trust it.
+> **Status: v1.7 — experimental.** 191 unit tests and 40 end-to-end checks pass, the panel has been audited ([21 findings, all fixed](docs/panel-audit.md)), and every path has been exercised against a fake Telegram and a fake model. It has **not** yet been run against a live Telegram account or a real 1.7B model in this repository. Connect your own bot first, in draft mode, and watch the first ten replies before you trust it.
 
 ## What it does
 
@@ -385,7 +385,7 @@ tg-ai-secretary/
 ## Tests
 
 ```bash
-npm test            # 187 unit tests
+npm test            # 191 unit tests
 npm run selftest    # 40 end-to-end checks (fake Telegram + fake model)
 npm run hw          # machine report
 ```
@@ -418,6 +418,29 @@ What the numbers cover:
 - **Serverless quirk:** the Ollama key lives in the database there, because that runtime documents no secrets store. The local runtime reads it from `bot/.env` or the panel.
 
 ## Changelog
+
+### v1.7.2 — the command now controls what it says it does
+
+Three things a real Windows session exposed, all about telling the truth:
+
+**Fixed**
+- **`tg-secretary` from a checkout silently controlled the installed copy.**
+  `$MyInvocation.MyCommand.Path` is empty inside a function, so "the directory this script
+  lives in" never matched and discovery fell through to `%LOCALAPPDATA%`. It is
+  `$PSCommandPath` now, and when both copies exist the installed one still wins — it is the
+  one that is running — but `status` says which checkout the command came from, and `-Dir`
+  switches.
+- **`task Ready`, `bot not running`.** The trigger was *at logon*, and the task was
+  registered after the user had signed in, so it waited for the next sign-in. The task now
+  also checks every 5 minutes: a stopped bot is started again, a running one is left alone
+  (`-MultipleInstances IgnoreNew`). PowerShell 5.1 cannot put a repetition on a logon
+  trigger, so it is borrowed from a `-Once` trigger, in a `try` that falls back to the
+  logon-only behaviour it had before.
+- **`stop` had to survive that check**, or it would have lasted five minutes. `stop` leaves
+  `bot\state\stopped`, `bin\run-bot.cmd` refuses to start while it exists, and `start` and
+  `restart` clear it.
+- **`paths` now answers "why is the command not found"** — it names the file, and separates
+  *on your saved PATH* from *on this window's PATH*.
 
 ### v1.7.1 — the safety net had a 50% hit rate
 

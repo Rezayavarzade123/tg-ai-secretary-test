@@ -291,6 +291,78 @@ test('flags are parsed by the script, not by parameter binding', () => {
   assert.match(cliPs1, /\(n\|lines\)/i);
 });
 
+test('the front end recognises the checkout it was called from', () => {
+  // Found on a real Windows box: bin\tg-secretary.ps1 inside the repo, yet status
+  // reported %LOCALAPPDATA%\Programs\tg-ai-secretary. $MyInvocation.MyCommand.Path is
+  // empty inside a function, so the "the directory this script lives in" step never
+  // fired and discovery silently fell through to the installed copy.
+  const start = codeCli.indexOf('function Find-Install {');
+  assert.ok(start > 0);
+  let depth = 0;
+  let end = start;
+  for (let i = codeCli.indexOf('{', start); i < codeCli.length; i += 1) {
+    if (codeCli[i] === '{') depth += 1;
+    else if (codeCli[i] === '}') { depth -= 1; if (depth === 0) { end = i; break; } }
+  }
+  // Comments may name the broken expression (they explain it); only code counts.
+  const body = codeCli.slice(start, end);
+
+  assert.match(body, /\$PSCommandPath/, 'the script path must come from $PSCommandPath');
+  assert.ok(!/\$MyInvocation\.MyCommand\.Path/.test(body),
+    '$MyInvocation.MyCommand.Path is empty inside a function - that was the bug');
+
+  // And when both copies exist, the installed one wins unless the task runs the
+  // checkout - with a line saying so, instead of a silent switch.
+  assert.match(body, /Get-TaskHome/, 'the decision needs to know what the task runs');
+  assert.match(cliPs1, /this script lives in/, 'the user is told which copy is being controlled');
+});
+
+test('paths answers "why is the command not found"', () => {
+  const start = cliPs1.indexOf('function Show-Paths {');
+  assert.ok(start > 0);
+  const body = cliPs1.slice(start, cliPs1.indexOf('\n}', start));
+  assert.match(body, /tg-secretary\.cmd/, 'it names the file to run in full');
+  assert.match(body, /GetEnvironmentVariable\('Path', 'User'\)/, 'the saved PATH is what a new window inherits');
+  assert.match(body, /\$env:Path/, 'and the PATH this window actually has');
+  assert.match(body, /not in this window/, 'the two cases are named separately');
+});
+
+test('a stop survives the task checking whether the bot is running', () => {
+  // The trigger asks every few minutes "is it running?"; without a marker, "stop"
+  // would last exactly one interval.
+  assert.match(installPs1, /bot\\state\\stopped/, 'the run script should look for the marker');
+  assert.match(installPs1, /if exist "bot\\state\\stopped"/, 'and refuse to start when it is there');
+  assert.match(cliPs1, /\$StopMarker/, 'the command writes and clears it');
+  assert.match(cliPs1, /function Stop-Bot \{[\s\S]*?WriteAllText\(\$StopMarker/, 'stop writes the marker');
+  assert.match(cliPs1, /function Start-Bot \{[\s\S]*?Remove-Item \$StopMarker/, 'start clears it');
+  // A foreground run would otherwise race the task's own check for a second instance.
+  assert.match(cliPs1, /function Start-Bot \{[\s\S]*?foreground run/, 'a foreground run pauses the task');
+  // Both tasks ignore a second instance, or the repetition would start a second copy.
+  // Counted in the code, not the comments that explain it.
+  assert.equal((codeInstall.match(/-MultipleInstances IgnoreNew/g) || []).length, 2);
+});
+
+test('the task is asked to check again, not only at logon', () => {
+  // "Starts at logon" on a machine that is already logged in leaves the task Ready
+  // and the bot down. A repetition turns the scheduler into the watchdog.
+  assert.match(installPs1, /function New-BotTrigger/);
+  const start = installPs1.indexOf('function New-BotTrigger');
+  const body = installPs1.slice(start, installPs1.indexOf('\n}', start));
+  assert.match(body, /RepetitionInterval/);
+  assert.match(body, /RepetitionDuration/);
+  assert.match(body, /\$trigger\.Repetition = /);
+  // Best-effort: a build that refuses MaxValue still gets a working task, and says so.
+  assert.match(body, /catch/);
+  assert.match(body, /still starts at logon/i);
+
+  // Both tasks use it: the bot, and the model server.
+  assert.equal((installPs1.match(/New-BotTrigger "\$env:USERDOMAIN/g) || []).length, 2);
+  // The bare logon trigger may only exist inside the helper that adds the repetition.
+  const outsideHelper = installPs1.replace(body, ' ');
+  assert.ok(!/New-ScheduledTaskTrigger -AtLogOn/.test(outsideHelper),
+    'a task was registered with a logon-only trigger');
+});
+
 test('the PowerShell front end finds its install the same way', () => {
   assert.match(cliPs1, /SECRETARY_HOME/);
   assert.match(cliPs1, /Join-Path \$env:LOCALAPPDATA 'Programs\\tg-ai-secretary'/);
