@@ -154,6 +154,42 @@ test('the installer takes the same decisions as install.sh', () => {
   assert.match(installPs1, /ProgramData/, 'machine-wide default location when elevated');
 });
 
+test('native tools are run through a helper that does not treat stderr as failure', () => {
+  // The bug this exists for: "git.exe : From https://..." appeared on a real Windows
+  // box and aborted the install. git writes progress to stderr; PowerShell 5.1 turns
+  // redirected native stderr into an error record, and with $ErrorActionPreference
+  // = 'Stop' that is a terminating NativeCommandError thrown before $LASTEXITCODE can
+  // be read. The exit code is the verdict, so the helper relaxes the preference for
+  // the duration of the call only.
+  const start = installPs1.indexOf('function Invoke-Native {');
+  assert.ok(start > 0, 'install.ps1 should have an Invoke-Native helper');
+  let depth = 0;
+  let end = start;
+  for (let i = installPs1.indexOf('{', start); i < installPs1.length; i += 1) {
+    if (installPs1[i] === '{') depth += 1;
+    else if (installPs1[i] === '}') { depth -= 1; if (depth === 0) { end = i; break; } }
+  }
+  const body = installPs1.slice(start, end);
+
+  const relax = body.indexOf("$ErrorActionPreference = 'Continue'");
+  const invoke = body.indexOf('& $File @Arguments');
+  assert.ok(relax > 0, 'Invoke-Native must relax $ErrorActionPreference');
+  assert.ok(invoke > relax, 'the preference has to be relaxed before the call, not after');
+  assert.match(body, /\$LASTEXITCODE/, 'the exit code, not the stderr text, decides');
+
+  // Nothing else may redirect a native tool's stderr into the error stream.
+  const redirected = [...installPs1.matchAll(/^.*&\s+\S+[^\n]*2>&1.*$/gm)].map((m) => m[0].trim());
+  assert.ok(redirected.length > 0, 'the helper itself should merge stderr');
+  for (const line of redirected) {
+    assert.match(line, /& \$File @Arguments 2>&1/, `stderr is merged outside Invoke-Native: ${line}`);
+  }
+
+  // git, icacls and "node -v" all went through it, because each of them talks on stderr.
+  assert.ok(!/&\s+icacls\b/.test(installPs1), 'icacls should go through Invoke-Native');
+  assert.ok(!/\(&\s+\$NodePath/.test(installPs1), 'node should go through Invoke-Native');
+  assert.ok(!/&\s+git\b/.test(installPs1), 'git should go through Invoke-Native');
+});
+
 test('the token is never written into the checkout when installing for all users', () => {
   // Elevated installs put settings in ProgramData, next to nothing else, which is
   // the Windows counterpart of /etc/secretary-bot.env - and bot/env.mjs reads it.

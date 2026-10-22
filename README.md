@@ -377,7 +377,7 @@ tg-ai-secretary/
 ## Tests
 
 ```bash
-npm test            # 170 unit tests
+npm test            # 171 unit tests
 npm run selftest    # 38 end-to-end checks (fake Telegram + fake model)
 npm run hw          # machine report
 ```
@@ -407,6 +407,20 @@ What the numbers cover:
 - **Serverless quirk:** the Ollama key lives in the database there, because that runtime documents no secrets store. The local runtime reads it from `bot/.env` or the panel.
 
 ## Changelog
+
+### v1.6.1 — the first real Windows run
+
+**Fixed**
+- **`install.ps1` died at the git step** with `git.exe : From https://…` and
+  `NativeCommandError`. git writes progress to stderr, and PowerShell 5.1 turns
+  redirected native stderr into an error record — with `$ErrorActionPreference = 'Stop'`
+  that is a terminating error, thrown before the exit code could be read. Every native
+  call now goes through one helper that relaxes the preference for the length of the call
+  and judges the command by `$LASTEXITCODE`. `git`, `icacls` and `node -v` all go through
+  it, so a warning from any of them can no longer abort an install.
+- The upgrade step's `git fetch` / `merge --ff-only` is wrapped in its own `try`: the
+  upgrade is optional and never overwrites anything, so a git problem is a warning, not a
+  dead script.
 
 ### v1.6 — Windows
 
