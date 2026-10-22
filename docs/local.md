@@ -198,6 +198,7 @@ All of these live in the panel and in Telegram; they are the same rows.
 | `quiet_start` / `quiet_end` | off | Whole hours, 0–23. Inside the window auto mode drafts instead of sending. Both blank = off; the two must differ |
 | `timezone` | machine default | Which clock quiet hours and the date line use |
 | `probe_last` | empty | The last probe verdict; auto mode reads it |
+| `group_mode` | `on` | Answer in group chats when addressed. `off` = silent in groups |
 
 Per-person settings live on the contact row, not in `settings`: notes, a language
 override and `blocked`. The People tab in the panel and `/contact`, `/block` write
@@ -207,6 +208,40 @@ Prompt budget matters more than model size here. The secretary prompt is deliber
 short: identity rules, the language line, `/secretaryinfo`, the note for *that person*
 if there is one, and the date. Nothing else is added, because on a Jaguar core every
 extra paragraph is paid for in seconds of prefill.
+
+### 6a. Group chats
+
+Two different features get called "groups", and only one of them can work:
+
+**Secretary mode does not cover groups.** A business connection delivers messages
+from your *private* chats; there is no API to post into a group as you. A group
+member's message to a group is nothing the bot can answer on your behalf, and no
+configuration changes that.
+
+**Bot mode does**, because there the bot speaks as itself. It is deliberately
+narrow:
+
+| Situation | What the bot does |
+|---|---|
+| `@yourbot what is the plan?` | answers, with the mention stripped before the model sees it |
+| a reply to one of its messages | answers |
+| `/status@yourbot` and other commands | refuses: "only works in a private chat" |
+| anything else in the group | silence — no model call, no tokens burned |
+| `/groups off` (in private) or the panel switch | silence even when mentioned |
+
+Each group has its own conversation memory (`group:<id>`), so what it learns in
+one group does not leak into another. In forum groups, replies stay in the topic
+they came from.
+
+**It will not see mentions with the BotFather default.** With privacy mode on,
+Telegram delivers only commands and replies to the bot — not mentions of it. Either
+turn privacy mode off (`/setprivacy` → Disable) or make the bot an admin of the
+group. This is a Telegram setting, not something the bot can change.
+
+Never give the bot's account anything you would not want a group to see: in a group
+it speaks with its own identity, but the model and its prompt are the same one that
+holds your private notes. Notes are not injected into group replies (they are
+secretary-mode only), but the bot-mode prompt is.
 
 ### 6b. The probe gate
 

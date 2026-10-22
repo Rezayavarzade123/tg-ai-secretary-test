@@ -367,6 +367,10 @@ function validateSetting(key, rawValue) {
     case 'secretary':
       if (!['on', 'off'].includes(value)) throw bad('secretary must be on or off');
       return value;
+    case 'group_mode':
+      // "on" means the bot answers in groups when it is addressed, and only then.
+      if (!['on', 'off'].includes(value)) throw bad('group_mode must be on or off');
+      return value;
     case 'timezone':
       if (!value) return '';
       try { new Intl.DateTimeFormat('en-GB', { timeZone: value }); } catch { throw bad('Unknown timezone. Use an IANA name such as Europe/London.'); }

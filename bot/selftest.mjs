@@ -335,6 +335,44 @@ await check('context and a fixed language for one contact reach the prompt and t
   assert.equal(draft.lang, 'fa', 'the safety net uses the contact language too');
 });
 
+await check('in a group the bot answers only when it is addressed', async () => {
+  const group = { id: -1001234567890, type: 'supergroup', title: 'Test group' };
+  const from = { id: OWNER, first_name: 'Sam' };
+
+  // Not addressed: silence. No model call, no message.
+  const before = sent.length;
+  const modelBefore = modelRequests.length;
+  await botMessage({ message_id: 1, chat: group, from, text: 'does anyone know the plan?' });
+  assert.equal(sent.length, before, 'a plain group message gets no reply');
+  assert.equal(modelRequests.length, modelBefore, 'and costs no model call');
+
+  // A command from a group member must not change settings.
+  await botMessage({ message_id: 2, chat: group, from, text: '/mode@selftest_bot off' });
+  assert.match(sent.at(-1).text, /private chat/i, 'commands are refused in groups');
+  assert.notEqual(await getSetting('secretary_mode', ''), 'off');
+
+  // Mentioned: it answers, in the group, with the mention stripped.
+  await botMessage({
+    message_id: 3,
+    chat: group,
+    from,
+    text: '@selftest_bot what is the plan for Friday?',
+    entities: [{ type: 'mention', offset: 0, length: 14 }],
+  });
+  const reply = sent.at(-1);
+  assert.equal(reply.chat_id, group.id, 'the answer goes to the group');
+  assert.ok(!reply.text.includes('@selftest_bot'), 'the model never sees the mention');
+  const asked = modelRequests.at(-1).messages.at(-1).content;
+  assert.equal(asked, 'what is the plan for Friday?');
+
+  // /groups off silences it entirely, even when mentioned.
+  await setSetting('group_mode', 'off');
+  const quiet = sent.length;
+  await botMessage({ message_id: 4, chat: group, from, text: '@selftest_bot are you there?' });
+  assert.equal(sent.length, quiet, 'group_mode off means silence');
+  await setSetting('group_mode', 'on');
+});
+
 await check('quiet hours turn an automatic reply into a draft', async () => {
   const { hourIn } = await import('../tgcloud/lib/hours.js');
   const { listDrafts: list } = await import('../tgcloud/lib/drafts.js');

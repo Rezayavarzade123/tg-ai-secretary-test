@@ -16,6 +16,7 @@ import { metricsSummary } from '../lib/metrics.js';
 import { setMuted } from '../lib/secretary.js';
 import { isOwner, ownerId } from '../lib/owner.js';
 import { LANGUAGES, isLanguage, language, languagePromptName } from '../lib/lang.js';
+import { isGroupChat, botIdentity, addressesBot, stripAddress, historyScope, groupMode, threadExtra } from '../lib/groups.js';
 
 const HELP = `Your assistant is ready. Just write to me normally, or use:
 
@@ -43,6 +44,7 @@ Safety
 /delay <seconds>  wait after a person's last message before answering (0 = off)
 /pause <hours>  stay quiet in a chat after you reply there yourself
 /notify on|off  copy every secretary reply to me
+/groups on|off  answer in group chats when someone mentions me (bot mode only)
 /mute <chat_id>, /unmute <chat_id>  per-chat switch
 
 System prompts
@@ -63,7 +65,11 @@ Setup
 /id  show your Telegram ID`;
 
 export default async function (message) {
-  if (message.chat.type !== 'private') return;
+  // Private chats are the main conversation. Groups are handled separately and
+  // narrowly (see handleGroup); channels and everything else are ignored.
+  const chatType = message.chat?.type;
+  if (chatType !== 'private' && !isGroupChat(chatType)) return;
+  if (isGroupChat(chatType)) return handleGroup(message);
 
   const chatId = message.chat.id;
   const fromId = message.from?.id;
@@ -122,6 +128,54 @@ export default async function (message) {
   }
 }
 
+// --- group chats -------------------------------------------------------------
+//
+// The bot is a member of a group as itself, so there is no impersonation risk —
+// but it must not answer everything. It replies only when addressed (mention,
+// reply to one of its messages, /command@botname), only when the owner has left
+// group_mode on, and with its own memory per group. Commands are refused here:
+// a group member must not be able to change the owner's settings, and /setkey
+// would leak a secret to the room.
+async function handleGroup(message) {
+  const chatId = message.chat.id;
+  if ((await groupMode()) === 'off') return;
+
+  const me = await botIdentity();
+  if (!addressesBot(message, me)) return;
+
+  const raw = message.text ?? message.caption ?? '';
+  const parsed = parseCommand(raw);
+  const extra = threadExtra(message);
+
+  if (parsed) {
+    if (parsed.cmd === 'id') {
+      await say(chatId, `This group's id is ${chatId}. Your user id is ${message.from?.id}.`, extra);
+      return;
+    }
+    if (['start', 'help'].includes(parsed.cmd)) {
+      await say(chatId, 'I answer here when you mention me. Everything else is set up in a private chat with me.', extra);
+      return;
+    }
+    await say(chatId, `/${parsed.cmd} only works in a private chat with me — settings are not changed from a group.`, extra);
+    return;
+  }
+
+  const text = stripAddress(raw, me);
+  if (!text) {
+    await say(chatId, `Mention me with a question, e.g. @${me.username || 'me'} what is the plan for Friday?`, extra);
+    return;
+  }
+
+  try {
+    const answer = await withTyping(chatId, null,
+      () => respond({ scope: historyScope(message.chat), userText: text, mode: 'bot' }));
+    await say(chatId, answer, extra);
+  } catch (e) {
+    console.error(e);
+    await say(chatId, '⚠️ ' + errMsg(e), extra);
+  }
+}
+
 async function runCommand(chatId, message, { cmd, arg }) {
   switch (cmd) {
     case 'start':
@@ -147,6 +201,27 @@ async function runCommand(chatId, message, { cmd, arg }) {
       }
       await setSetting('model', arg);
       await say(chatId, `Model set to ${arg}.`);
+      return;
+    }
+
+    case 'groups': {
+      const cur = await groupMode();
+      if (!arg) {
+        await say(chatId,
+          `Group chats: ${cur.toUpperCase()}\n\n` +
+          (cur === 'on'
+            ? 'In a group I answer only when someone mentions me or replies to me. I never change settings there.\n\n'
+            : 'I stay silent in groups, even when mentioned.\n\n') +
+          `/groups on   answer when mentioned\n/groups off  never answer in groups\n\n` +
+          'Secretary mode is private-chat only — Telegram does not deliver group messages to it.');
+        return;
+      }
+      const v = arg.toLowerCase();
+      if (!['on', 'off'].includes(v)) { await say(chatId, 'Usage: /groups on|off'); return; }
+      await setSetting('group_mode', v);
+      await say(chatId, v === 'on'
+        ? 'In groups I will answer when mentioned, and only then.'
+        : 'I will stay silent in groups.');
       return;
     }
 

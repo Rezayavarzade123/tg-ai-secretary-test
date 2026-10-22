@@ -639,6 +639,13 @@ function viewSetup() {
         <label for="tz">Timezone (IANA) <span class="muted">(empty = default)</span></label>
         <input id="tz" value="${esc(s.timezone || '')}" placeholder="Europe/London">
       </div>
+      <div class="row" style="justify-content:space-between;margin-bottom:6px">
+        <div>
+          <div>Answer in group chats</div>
+          <div class="small muted">Only when someone mentions me or replies to me. Commands still only work in private. Secretary mode never covers groups.</div>
+        </div>
+        ${toggle('groupSw', (s.group_mode || 'on') !== 'off', 'Answer in group chats when mentioned')}
+      </div>
       <div class="row end">
         <button type="button" id="sendTest">Send a test message</button>
         <button type="button" class="primary" id="saveTelegram">Save</button>
@@ -836,6 +843,9 @@ function wire() {
 
   bindToggle('langAuto', (on) => saveSettings({ lang_auto: on ? 'on' : 'off' }, `Language following ${on ? 'on' : 'off'}`));
   bindToggle('notifySw', (on) => saveSettings({ notify: on ? 'on' : 'off' }, `Notifications ${on ? 'on' : 'off'}`));
+  bindToggle('groupSw', (on) => saveSettings({ group_mode: on ? 'on' : 'off' }, on
+    ? 'I will answer in groups when mentioned'
+    : 'I will stay silent in groups'));
 
   const delay = $('#delayRange');
   if (delay) {

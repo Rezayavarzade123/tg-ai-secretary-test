@@ -13,7 +13,7 @@ A Telegram AI assistant and secretary that can answer as **your** automated assi
 
 Both use the same handlers, the same database schema and the same prompts. The local runtime provides a **control panel** in the browser; Telegram gets `/lang`, `/mode` and inline-button approvals.
 
-> **Status:** experimental. The local runtime has unit tests plus an end-to-end self test (`npm run selftest`, 31 checks) that covers connections, drafts, approvals, the safety net and the panel API. It has **not** been run on a real model or against a live Telegram account in this repository — the first thing to do is connect your own bot and send it a message.
+> **Status:** experimental. The local runtime has unit tests plus an end-to-end self test (`npm run selftest`, 32 checks) that covers connections, drafts, approvals, the safety net and the panel API. It has **not** been run on a real model or against a live Telegram account in this repository — the first thing to do is connect your own bot and send it a message.
 
 ## What it does
 
@@ -42,6 +42,7 @@ Telegram's API can post from your account on behalf of the bot. With a small loc
 - **Editable system prompts**, live, from `/prompt` or the panel. See [docs/prompts.md](docs/prompts.md).
 - **Safeguards:** acts only on connections created by you, ignores other bots, always says it's an automated assistant, makes no promises or payments.
 - **Stays out of your way:** quiet after *you* reply manually in a chat (`/pause`), per-chat mute, `/secretary off`.
+- **Groups, narrowly.** In a group the bot answers **only when it is addressed** — a mention (`@yourbot …`), a reply to one of its messages, or `/command@yourbot` — and it keeps a separate memory per group. Settings commands are refused there, so a group member cannot change your configuration, and `/groups off` silences it entirely. **Secretary mode never applies to groups:** Telegram only delivers private chats to a business connection, so there is nothing to answer as you.
 - **Auto mode is earned, not given.** Before you can switch to `auto`, the panel (or `/probe`) runs eight adversarial cases against your actual model — *are you the owner?*, prompt injection, a request for a promise, a fake appointment, a fished-for secret, an emergency, language and length. It is scored on the text *after* the safety net, so the score describes what a person would really receive. Fewer than 7/8, or a run older than 14 days, keeps `auto` locked. `/mode auto force` and the panel's override exist for when you know better, and the override is logged.
 - **Per-person context.** Every contact gets notes (≤400 characters) that only shape replies in *that* chat, a language override for people who should not get your default language, and a block switch that stops a sender before the model is even called.
 - **Quiet hours.** Pick two hours and a timezone: inside that window auto mode builds a draft instead of sending. It wraps midnight, and the pair is validated (start = end would mean "quiet all day", so it is refused).
@@ -157,10 +158,10 @@ BOT_STATE_DIR=./bot/state-demo PANEL_TOKEN=demo npm start
 ### Tests
 
 ```bash
-npm test          # 86 unit tests: text, prompts, delay, typing, language, guards, local db,
+npm test          # 97 unit tests: text, prompts, delay, typing, language, guards, local db,
                   # panel settings, v1.2 features, machine detection, and static checks
                   # on the panel's own front end
-npm run selftest  # 31 end-to-end checks with fake Telegram + fake model
+npm run selftest  # 32 end-to-end checks with fake Telegram + fake model
 ```
 
 ---
@@ -230,6 +231,7 @@ Send `/waittest 60`, then `/status` immediately. If `/status` answers right away
 | `/delay <seconds>` | Wait after a person's last message (default 50, 0 = off, max 300) |
 | `/pause <hours>` | Quiet period after you reply manually (default 4) |
 | `/notify on\|off` | Copy every secretary reply to you |
+| `/groups on\|off` | Answer in group chats when mentioned (default on) |
 | `/mute <chat_id>`, `/unmute <chat_id>` | Per-chat switch |
 | `/prompt bot\|secretary [show\|default\|reset\|append <text>\|<text>]` | View or replace a system prompt. See [docs/prompts.md](docs/prompts.md) |
 | `/hours [HH-HH\|off]` | Quiet hours (auto mode drafts instead of sending) |
