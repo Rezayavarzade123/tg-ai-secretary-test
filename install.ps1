@@ -602,10 +602,12 @@ exit /b %errorlevel%
 # tg-secretary.cmd resolves from anywhere. A symlink would need elevation and does
 # not survive copying, which is why the PATH entry points at the real directory.
 Write-Step 'The tg-secretary command'
+$binDir = Join-Path $Dir 'bin'
+$CommandCmd = Join-Path $binDir 'tg-secretary.cmd'
+$PathWasAdded = $false
 if (-not $NoPath) {
-    $binDir = Join-Path $Dir 'bin'
     $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
-    if ($userPath -and ($userPath -split ';' | Where-Object { $_.TrimEnd('\') -ieq $binDir.TrimEnd('\') })) {
+    if ($userPath -and ($userPath -split ';' | Where-Object { $_ -and $_.TrimEnd('\') -ieq $binDir.TrimEnd('\') })) {
         Write-Ok "$binDir is already on your PATH"
     } else {
         Invoke-Step "add $binDir to the user PATH" {
@@ -613,11 +615,19 @@ if (-not $NoPath) {
             [Environment]::SetEnvironmentVariable('Path', $newPath, 'User')
         }
         Write-Ok "$binDir added to your PATH (new terminals only)"
-        Write-Info 'In this window it is not there yet; use the full path or open a new terminal.'
+        $PathWasAdded = $true
     }
+    # PATH is inherited at process start, so the window you are reading this in knows
+    # nothing about it. Add it here too, for anything run from this PowerShell session.
+    $env:Path = "$env:Path;$binDir"
 } else {
-    Write-Info "Skipped (-NoPath). The command is $Dir\bin\tg-secretary.cmd"
+    Write-Info "Skipped (-NoPath). The command is $CommandCmd"
 }
+
+# Whether this window can already type "tg-secretary" - a cmd.exe or a PowerShell that
+# was open before the installer ran cannot, and "not recognized" reads like a failure
+# when it is only a stale environment.
+$OnPathNow = [bool](($env:Path -split ';') | Where-Object { $_ -and ($_.TrimEnd('\') -ieq $binDir.TrimEnd('\')) })
 
 # --- 6. the model -------------------------------------------------------------
 
@@ -767,10 +777,17 @@ Write-Host '  2. Make sure the model server is running (above), then press "Try 
 Write-Host '     in the dashboard.'
 Write-Host ''
 Write-Host ' Later' -ForegroundColor White
-Write-Host '  tg-secretary status        is it running, and is the model server up'
-Write-Host '  tg-secretary panel         the panel URL with its token'
-Write-Host '  tg-secretary logs -f       follow the log'
-Write-Host '  tg-secretary update        check GitHub, then: update apply'
+if ($OnPathNow -and -not $PathWasAdded) {
+    Write-Host '  tg-secretary status        is it running, and is the model server up'
+    Write-Host '  tg-secretary panel         the panel URL with its token'
+    Write-Host '  tg-secretary logs -f       follow the log'
+    Write-Host '  tg-secretary update        check GitHub, then: update apply'
+} else {
+    Write-Host '  The command is on your PATH now, but this window was opened before that:' -ForegroundColor White
+    Write-Host "    `"$CommandCmd`" status"
+    Write-Host "    `"$CommandCmd`" panel"
+    Write-Host '  A newly opened terminal will find "tg-secretary" by itself.'
+}
 Write-Host "  Re-run this script with -Dir `"$Dir`" to upgrade."
 Write-Host '  .\uninstall.ps1 keeps your data; add -Purge to delete it.'
 Write-Host ''

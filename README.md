@@ -363,10 +363,11 @@ tg-ai-secretary/
 │     └─ config.js, pending.js, secretary.js, owner.js, activity.js, text.js
 ├─ bin/tg-secretary            the command: status, panel, start/stop, logs, update
 ├─ bin/tg-secretary.{ps1,cmd}  the same command on Windows
+├─ tg-secretary.cmd            the command from the checkout root, before installing
 ├─ install.sh / uninstall.sh   the Linux installer: checks, copies, settings, systemd
 ├─ install.ps1 / uninstall.ps1 the Windows installer: Scheduled Task, ACL, PATH
 ├─ bot/cli.mjs                 version + update, shared by both front ends
-├─ tests/                      21 files, run against a fake sdk
+├─ tests/                      22 files, run against a fake sdk
 └─ docs/                       install.md · windows.md · local.md · prompts.md · panel-audit.md · plan-local-ps4.md
 ```
 
@@ -377,7 +378,7 @@ tg-ai-secretary/
 ## Tests
 
 ```bash
-npm test            # 171 unit tests
+npm test            # 172 unit tests
 npm run selftest    # 38 end-to-end checks (fake Telegram + fake model)
 npm run hw          # machine report
 ```
@@ -421,6 +422,12 @@ What the numbers cover:
 - The upgrade step's `git fetch` / `merge --ff-only` is wrapped in its own `try`: the
   upgrade is optional and never overwrites anything, so a git problem is a warning, not a
   dead script.
+- **`tg-secretary` works from the checkout without installing.** cmd.exe searches the
+  current directory and PATH, not subdirectories, so typing the command in the repository
+  root said *not recognized* while the command sat one directory down. A `tg-secretary.cmd`
+  at the top of the checkout runs the copy you are standing in.
+- The installer prints the command's **full path** when the PATH entry it just wrote cannot
+  be seen by the window you are reading it in, instead of assuming `tg-secretary` resolves.
 
 ### v1.6 — Windows
 

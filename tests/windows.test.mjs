@@ -349,6 +349,23 @@ test('state set inside an Invoke-Step scriptblock is written with $script:', () 
 
 test('the .cmd wrapper is a wrapper and forwards everything', () => {
   assert.match(cliCmd, /tg-secretary\.ps1/);
+test('a checkout runs the command from its own root, before any install', () => {
+  // cmd.exe searches the current directory and PATH, not bin/ - so being in the repo
+  // and typing "tg-secretary panel" said "not recognized" even though the command was
+  // one directory down. A shim at the root makes the checkout usable as-is.
+  const root = read('tg-secretary.cmd');
+  assert.match(root, /%~dp0bin\\tg-secretary\.ps1/, 'it should run the checkout it sits in');
+  assert.match(root, /-ExecutionPolicy Bypass/);
+  assert.match(root, /%\*/);
+  assert.match(root, /exit \/b %errorlevel%/);
+  assert.ok(root.includes('\r\n'), 'the .cmd file should use CRLF line endings');
+  // And the installer has to tell the user where it put the command, for the window
+  // that was already open when PATH changed.
+  assert.match(installPs1, /\$CommandCmd/, 'install.ps1 should keep the full path to the .cmd');
+  assert.match(installPs1, /PATH is inherited at process start|opened before that/);
+  assert.match(installPs1, /\$PathWasAdded/);
+});
+
   assert.match(cliCmd, /-NoProfile/);
   assert.match(cliCmd, /-ExecutionPolicy Bypass/);
   assert.match(cliCmd, /%\*/);

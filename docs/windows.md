@@ -87,8 +87,13 @@ and Windows Terminal alike. Flags are read by the script itself rather than by P
 parameter binding, so `-f`, `-n 50`, `-Foreground` and `--purge` all work, in either
 spelling, without the command stopping with *A parameter cannot be found*.
 
+From the repository root, `tg-secretary` also works **before** you install anything: there is
+a `tg-secretary.cmd` at the top of the checkout that runs the copy you are standing in.
+It controls that copy, with its own state in `bot\state` — not the installed one.
+
 A new terminal is needed once after installing, because the PATH change is per-user and
-does not reach the window you installed from.
+does not reach the window you installed from. The installer prints the full path of the
+command for that window, and says when a fresh one will find it by itself.
 
 ## Upgrading and uninstalling
 
@@ -151,6 +156,6 @@ honesty the README applies to Telegram and the model.
 | The panel does not answer | `tg-secretary logs -n 50`; the installer prints the same tail when its own check fails |
 | `A parameter cannot be found that matches parameter name …` | You are running an older `tg-secretary.ps1`: flags are parsed by the script itself from v1.6 on |
 | `git.exe : From https://…` then `NativeCommandError` | Fixed in 1.6.1: `install.ps1` in front of you is older. Re-run the newer one, or `git -C <install> pull` first |
-| `tg-secretary` not found | The PATH entry is new: open a new terminal, or run `%LOCALAPPDATA%\Programs\tg-ai-secretary\bin\tg-secretary.cmd` |
+| `'tg-secretary' is not recognized as an internal or external command` | Either the installer has not reached its PATH step yet, or this window predates the change. Open a new terminal, run the full path `"%LOCALAPPDATA%\Programs\tg-ai-secretary\bin\tg-secretary.cmd" status`, or — inside the checkout — use `.\tg-secretary.cmd status` |
 | The task runs then stops immediately | `tg-secretary logs` — usually a missing token or a port already in use |
 | "No AVX2" on a machine that has it | It cannot: the installer measures with kernel32. `npm run hw` without it says "not measured" instead of guessing |
