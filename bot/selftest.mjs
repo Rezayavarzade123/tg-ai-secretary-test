@@ -1017,6 +1017,39 @@ await check('login is throttled after repeated wrong tokens', async () => {
   await new Promise((resolve) => server.close(resolve));
 });
 
+await check('the installer is coherent: help works, and a dry run changes nothing', async () => {
+  // Not a full install (tests/install.test.mjs does that); this is the check that
+  // the script a stranger runs first is not broken in this checkout.
+  const { execFile } = await import('node:child_process');
+  const { promisify } = await import('node:util');
+  const run = promisify(execFile);
+  const os = await import('node:os');
+  const fs2 = await import('node:fs');
+  const path2 = await import('node:path');
+  const script = path2.join(process.cwd(), 'install.sh');
+
+  const help = await run('bash', [script, '--help']);
+  assert.match(help.stdout, /--dry-run/);
+  assert.match(help.stdout, /--no-service/);
+
+  const target = path2.join(fs2.mkdtempSync(path2.join(os.tmpdir(), 'selftest-install-')), 'app');
+  const dry = await run('bash', [script, '--dry-run', '--dir', target, '--no-service', '--token', '1:x']);
+  assert.match(dry.stdout, /nothing above was actually done/);
+  assert.equal(fs2.existsSync(target), false, 'a dry run must not create anything');
+
+  // And an install into a directory that is not ours is refused before it writes.
+  const foreign = fs2.mkdtempSync(path2.join(os.tmpdir(), 'selftest-foreign-'));
+  fs2.writeFileSync(path2.join(foreign, 'keep.txt'), 'mine');
+  let refused = false;
+  try {
+    await run('bash', [script, '--yes', '--dir', foreign, '--no-service', '--token', '1:x']);
+  } catch (e) {
+    refused = /not empty and does not look like this project/.test(`${e.stdout ?? ''}${e.stderr ?? ''}`);
+  }
+  assert.ok(refused, 'installing over a stranger\'s directory must fail loudly');
+  assert.equal(fs2.existsSync(path2.join(foreign, 'bot')), false);
+});
+
 const failed = results.filter((r) => !r.ok);
 console.log('──────────────────────────────────────────');
 console.log(`${results.length - failed.length}/${results.length} checks passed`);

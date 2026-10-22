@@ -20,6 +20,7 @@ cd tg-ai-secretary && npm start
 - [What it does](#what-it-does)
 - [The safety model](#the-safety-model)
 - [Features](#features)
+- [Install](#install)
 - [Quick start](#quick-start)
 - [The model, and the machine it runs on](#the-model-and-the-machine-it-runs-on)
 - [The control panel](#the-control-panel)
@@ -145,7 +146,34 @@ A feature that learns from people can be turned into a permanent instruction by 
 - Only what you wrote with `/secretaryinfo` may be shared. Your private notes never leave bot mode.
 - Everything lives in one JSON file on your machine (`bot/state/bot.json`), with 14 rolling backups. Nothing is sent anywhere except Telegram and your own model server.
 
+## Install
+
+```bash
+git clone https://github.com/ygasaino1/tg-ai-secretary.git
+cd tg-ai-secretary
+less install.sh          # it does root-ish things; read it first
+./install.sh
+```
+
+The installer checks the machine, copies the code to `/opt/tg-ai-secretary` (or
+`~/tg-ai-secretary`), writes your bot token to `/etc/secretary-bot.env` at mode `0600`,
+installs a systemd service with `Restart=always`, starts it, and waits until the control
+panel answers — then prints the panel URL and token.
+
+```bash
+./install.sh --dry-run     # every step, nothing changed
+./install.sh --no-service  # just the files and the settings
+./install.sh --dir /path   # upgrade an existing install (data and token kept)
+bash uninstall.sh --dir /path [--purge]
+```
+
+It does **not** download a model: the right GGUF depends on the CPU in the box and is a
+~1 GB download, so it prints `npm run hw` and the exact `llama-server` line instead. All
+the flags, the upgrade path and what it leaves behind: **[docs/install.md](docs/install.md)**.
+
 ## Quick start
+
+Without the installer:
 
 ```bash
 git clone https://github.com/ygasaino1/tg-ai-secretary.git
@@ -156,7 +184,8 @@ npm run hw                          # what can this machine run?
 npm start
 ```
 
-The runtime has **zero npm dependencies** — Node 18+ and a model server are the whole requirement. (`npm install` is only needed for the serverless CLI.)
+The runtime has **zero npm dependencies** — Node 18.19+ and a model server are the whole
+requirement. (`npm install` is only needed for the serverless CLI.)
 
 Then:
 
@@ -166,7 +195,7 @@ Then:
 4. For secretary mode: **Settings → Account → Chat Automation** on your phone, pick the bot, allow **Reply to messages**. It confirms, and drafts start arriving.
 5. Run **`/probe`** (or press *Run probe* in the panel) before you consider `/mode auto`.
 
-To run it at boot, see the systemd unit in [docs/local.md](docs/local.md) §4.
+To run it at boot by hand, see the systemd unit in [docs/local.md](docs/local.md) §4.
 
 ## The model, and the machine it runs on
 
@@ -304,8 +333,10 @@ tg-ai-secretary/
 │     ├─ lang.js                  language registry and detection
 │     ├─ update-bridge.js        lets the handlers reach the local updater
 │     └─ config.js, pending.js, secretary.js, owner.js, activity.js, text.js
-├─ tests/                      19 files, run against a fake sdk
-└─ docs/                       local.md · prompts.md · panel-audit.md · plan-local-ps4.md
+├─ install.sh                  the installer: checks, copies, writes settings, service
+├─ uninstall.sh                stop the service; --purge also deletes your data
+├─ tests/                      20 files, run against a fake sdk
+└─ docs/                       install.md · local.md · prompts.md · panel-audit.md · plan-local-ps4.md
 ```
 
 **One process, one data file.** The bot and the panel are the same Node process; state is one JSON file written atomically, with 14 rolling backups and a lock that refuses a second instance. No database to install, no native module to compile — which is the whole reason it runs on a console.
@@ -315,14 +346,14 @@ tg-ai-secretary/
 ## Tests
 
 ```bash
-npm test            # 124 unit tests
-npm run selftest    # 35 end-to-end checks (fake Telegram + fake model)
+npm test            # 139 unit tests
+npm run selftest    # 36 end-to-end checks (fake Telegram + fake model)
 npm run hw          # machine report
 ```
 
 What the numbers cover:
 
-- **unit** — text handling, prompts, reply delay, typing indicator, language detection, the guard, the local query builder, panel settings validation, the v1.2 features (contacts, quiet hours, probe, metrics), machine detection, group addressing, inline payloads, the learning filter, the updater's policy (modes, refusal conditions, parsing a behind/ahead count) and its real-git paths against two temporary repositories — fast-forward, rollback, a dirty tree, a diverged branch — and static checks on the panel's own front end (every wired id must exist, every tab must render, the session must survive a cookie-less proxy).
+- **unit** — text handling, prompts, reply delay, typing indicator, language detection, the guard, the local query builder, panel settings validation, the v1.2 features (contacts, quiet hours, probe, metrics), machine detection, group addressing, inline payloads, the learning filter, the updater's policy (modes, refusal conditions, parsing a behind/ahead count) and its real-git paths against two temporary repositories — fast-forward, rollback, a dirty tree, a diverged branch — static checks on the panel's own front end (every wired id must exist, every tab must render, the session must survive a cookie-less proxy), and 15 tests that run the installer for real — a dry run that changes nothing, a refused foreign directory, a real install whose panel answers, an upgrade that keeps settings and messages, and a purge that removes them.
 - **selftest** — drives real messages through the real handlers: a draft is created and approved, the guard replaces a promise, an urgent message never reaches the model, a blocked contact costs no model call, quiet hours turn an auto reply into a draft, the probe gate locks and unlocks auto, group messages are answered only when addressed, inline burst-debouncing, the learning pass refusing an instruction and a verification code, and `/update` telling the truth about status while refusing to touch a dirty checkout.
 
 ## Known limits
@@ -337,10 +368,23 @@ What the numbers cover:
 - **Text only** — photos, voice and stickers are announced to you, not answered. Replies are plain text.
 - **The panel is plain HTTP with one shared token**, no user accounts. Fine on a home LAN; use `PANEL_HOST=127.0.0.1` behind an SSH tunnel if the network isn't yours.
 - **One bot per state directory** — a lock file refuses a second copy.
+- **The installer is bash and Linux-shaped.** No systemd → it starts the bot once to prove it works and then tells you how to run it yourself; there is no launchd or Windows service.
+- **It does not install a model or build llama.cpp.** Those depend on the machine, and guessing wrong is slower than doing nothing ([docs/install.md](docs/install.md)).
 - **Auto-install is a remote-code-execution switch.** `update_mode: apply` runs whatever is pushed to your branch, unattended, every six hours. Keep it `notify` unless the remote is one only you can push to. Rollback covers the last install, not every install.
 - **Serverless quirk:** the Ollama key lives in the database there, because that runtime documents no secrets store. The local runtime reads it from `bot/.env` or the panel.
 
 ## Changelog
+
+### v1.4 — an installer
+
+**New**
+- **`install.sh`**: checks the machine (Node ≥ 18.19, 64-bit, free space), copies the code, writes the token to a `0600` file outside the repo, installs a systemd unit with `Restart=always`, starts it and waits for the panel to answer. `--dry-run` prints every step and changes nothing.
+- **`uninstall.sh`**: stops and removes only the unit files it wrote; `--purge` deletes the code, token and messages, after showing what will go.
+- Upgrade path: re-running against an existing install keeps `bot/state/` and the settings file, and fast-forwards a git checkout instead of overwriting it.
+- 15 installer tests, including a real install whose control panel has to answer, a dirty checkout that must not pretend to be updatable, and a selftest check.
+
+**Fixed**
+- The systemd unit in the docs pointed at `/etc/secretary.env` while the runtime reads `/etc/secretary-bot.env` — they are the same path now.
 
 ### v1.3 — updates from GitHub, on your terms
 

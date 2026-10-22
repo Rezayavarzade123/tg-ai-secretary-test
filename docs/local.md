@@ -125,6 +125,9 @@ WantedBy=multi-user.target
 
 ## 4. Start the bot
 
+`./install.sh` does everything in this section for you (flags and the upgrade path:
+[docs/install.md](install.md)). The manual steps:
+
 ```bash
 cp bot/.env.example bot/.env
 $EDITOR bot/.env          # BOT_TOKEN from @BotFather, BOT_TIMEZONE, LLM_BASE_URL
@@ -139,7 +142,7 @@ First run prints the panel URL and its access token. Two things to do immediatel
 2. Open the panel and press **Try the model** on the dashboard. A green
    "online · N ms" and a sensible answer means the whole chain works.
 
-For a service, use this unit; put the token in `/etc/secretary.env` (mode 0600)
+For a service, use this unit; put the token in `/etc/secretary-bot.env` (mode 0600)
 rather than the repository:
 
 ```ini
@@ -153,7 +156,7 @@ After=network-online.target llama-server.service
 Type=simple
 User=secretary
 WorkingDirectory=/opt/tg-ai-secretary     # a git clone, if you want /update
-EnvironmentFile=/etc/secretary.env
+EnvironmentFile=/etc/secretary-bot.env
 ExecStart=/usr/bin/node --import ./bot/register.mjs bot/runner.mjs
 Restart=always                            # keeps /update restarts hands-free
 RestartSec=5
