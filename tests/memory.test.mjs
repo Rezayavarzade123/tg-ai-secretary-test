@@ -3,12 +3,26 @@ import assert from 'node:assert/strict';
 
 import {
   isUsableFact, normalizeFact, parseFacts, extractionPrompt, transcriptFrom,
-  FACT_CHARS,
+  isGroundedFact, contentWords, FACT_CHARS,
 } from '../tgcloud/lib/memory.js';
 
 // Learning from people is the feature most able to go quietly wrong: a stranger
 // can otherwise rewrite the secretary's behaviour once and have it stick forever.
 // Everything here is pure, so the rules are readable.
+
+test('a fact about what the model could not find is not a fact', () => {
+  // From a real install: "Shadi Sadeghi Razlighi's city is not mentioned." was
+  // written down as something learned, and then injected into the prompt.
+  assert.equal(isUsableFact("Shadi Sadeghi Razlighi's city is not mentioned."), false);
+  assert.equal(isUsableFact('Her number is unknown'), false);
+  assert.equal(isUsableFact('No information about the job'), false);
+  // Persian, where \b does not work: the pattern must not rely on it.
+  assert.equal(isUsableFact('شهر او ذکر نشده است'), false);
+  assert.equal(isUsableFact('نامشخص است'), false);
+  // What the person actually says about themselves is still kept.
+  assert.equal(isUsableFact('Shadi is a technician.'), true);
+  assert.equal(isUsableFact('Works nights at the hospital'), true);
+});
 
 test('a plain fact about the sender is accepted', () => {
   assert.equal(isUsableFact('Works night shifts at the hospital'), true);
@@ -107,4 +121,45 @@ test('the transcript keeps roles straight and is bounded', () => {
 
   const big = transcriptFrom([{ role: 'user', content: 'x'.repeat(2000) }]);
   assert.ok(big.length < 600, 'a pasted wall of text is truncated');
+});
+
+// --- is it something they actually said? -------------------------------------
+
+test('a fact has to be supported by the conversation it came from', () => {
+  // A 1.7B model asked what someone said about themselves invents a job or a city.
+  // Stored, that is repeated back to a stranger as if they had said it.
+  const transcript = transcriptFrom([
+    { role: 'user', content: 'I work nights and my daughter is Ada' },
+    { role: 'assistant', content: 'Got it, I will pass that on.' },
+  ]);
+
+  assert.equal(isGroundedFact('Works night shifts at the hospital', transcript, 'Maria'), true);
+  assert.equal(isGroundedFact('Has a daughter named Ada, age 6', transcript, 'Maria'), true);
+  // Invented: none of it was said.
+  assert.equal(isGroundedFact('Is a technician', transcript, 'Maria'), false);
+  assert.equal(isGroundedFact('Lives in Porto', transcript, 'Maria'), false);
+  // Nothing left once the name is removed: not a fact about anyone.
+  assert.equal(isGroundedFact('Maria', transcript, 'Maria'), false);
+  assert.equal(isGroundedFact("Maria's name is Maria", transcript, 'Maria'), false);
+});
+
+test('the same rule works where there are no spaces to split on', () => {
+  const transcript = 'Them: من یک خبرنگار هستم و در تهران کار می‌کنم';
+  assert.equal(isGroundedFact('یک خبرنگار است', transcript, 'شادی'), true);
+  assert.equal(isGroundedFact('در تهران کار می‌کند', transcript, 'شادی'), true);
+  assert.equal(isGroundedFact('در شیراز زندگی می‌کند', transcript, 'شادی'), false);
+});
+
+test('content words ignore filler, numbers and the person\'s own name', () => {
+  assert.deepEqual(contentWords('the 6 of them'), []);
+  assert.deepEqual(contentWords('Drives a blue van'), ['driv', 'blue', 'van']);
+  assert.equal(isGroundedFact('Has 6 children', 'none of that was said', ''), false);
+});
+
+test('the extraction prompt forbids guessing', () => {
+  const p = extractionPrompt({ name: 'Maria', ownerName: 'Sam', transcript: 'Them: hi' });
+  assert.match(p, /Only what Maria actually wrote/);
+  assert.match(p, /Do not guess or infer/);
+  assert.match(p, /unknown, not mentioned/);
+  assert.match(p, /No greetings, no descriptions of the conversation/);
 });

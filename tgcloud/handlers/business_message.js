@@ -172,6 +172,12 @@ export default async function (msg) {
   } catch (e) {
     console.error(e);
     await logActivity('error', `Reply to ${name} (chat ${chatId}) failed: ${errMsg(e)}`);
-    await tellOwner(`⚠️ I could not reply to ${name} (chat ${chatId}): ${errMsg(e)}\nTheir message: ${text}`);
+    // A repeat failure in one chat is self-reinforcing: the model reads its own
+    // canned line back and writes it again. Say how to break the cycle, not just
+    // that it happened.
+    const hint = e?.code === 'LLM_DEGENERATE'
+      ? `\n\nNothing was sent to them. If this keeps happening in this chat, /reset ${chatId} clears what the model reads before answering.`
+      : '';
+    await tellOwner(`⚠️ I could not reply to ${name} (chat ${chatId}): ${errMsg(e)}${hint}\nTheir message: ${text}`);
   }
 }

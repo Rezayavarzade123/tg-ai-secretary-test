@@ -15,7 +15,7 @@ import { languageLine } from './lang.js';
 import { getContact, contactPromptLine } from './contacts.js';
 import { factsPromptSection, learnFromConversation, shouldLearn, factsEnabled } from './memory.js';
 import { recordMetric } from './metrics.js';
-import { analyseAnswer, degenerateReply, correctionNote } from './degenerate.js';
+import { analyseAnswer, degenerateReply, correctionNote, normalise, isLanguageRefusal } from './degenerate.js';
 import { logActivity } from './activity.js';
 
 // Two modes, each with its own prompt:
@@ -113,13 +113,53 @@ export async function systemPrompt(mode, options = {}) {
 
 const historyLimit = (mode) => (mode === 'secretary' ? HISTORY_LIMIT_SECRETARY : HISTORY_LIMIT);
 
-async function loadHistory(scope, limit) {
+// A conversation can poison itself.
+//
+// This transcript is from a real install:
+//
+//   contact: سلام
+//   bot:     من یک دستیار خودکار هستم و نمی‌توانم به زبان انگلیسی پاسخ دهم…
+//   contact: تو چرا یک چیز را تکرار می‌کنی؟
+//   bot:     من یک دستیار خودکار هستم و نمی‌توانم به زبان انگلیسی پاسخ دهم…
+//
+// The line was produced once, badly, and then sent five times. From then on it sits
+// in the history five times, so it is the most likely thing a 1.7B model writes next
+// - every failure adds another copy. The replies on disk are left alone (they are
+// what was really said); what the model is shown is cleaned up: identical assistant
+// turns collapse to the last one, and an assistant turn that only hands the sender's
+// message back is dropped.
+export function sanitiseHistory(rows) {
+  const out = [];
+  const seen = new Map();      // normalised assistant text -> index in `out`
+  for (const m of rows) {
+    if (m.role === 'assistant') {
+      // A stored "I cannot answer in English" is never good context: it is the exact
+      // sentence the model then writes again. Drop it outright - this is how an old
+      // conversation heals itself without anyone running /reset.
+      if (isLanguageRefusal(m.content)) continue;
+      const key = normalise(m.content);
+      // Short words ("ok", "بله") repeat legitimately; only sentences count.
+      if (key && key.length >= 12) {
+        const earlier = seen.get(key);
+        if (earlier !== undefined) out[earlier] = null;
+        seen.set(key, out.length);
+      }
+      const before = out[out.length - 1];
+      if (before && before.role === 'user' && normalise(before.content) === key) continue;
+    }
+    out.push(m);
+  }
+  return out.filter(Boolean);
+}
+
+// Exported for tests: this is the exact history the model is given, cleaned up.
+export async function loadHistory(scope, limit) {
   const rows = await db.select().from(history)
     .where(eq(history.scope, scope))
     .orderBy(desc(history.id))
     .limit(limit)
     .all();
-  return rows.reverse().map((r) => ({ role: r.role, content: r.content }));
+  return sanitiseHistory(rows.reverse().map((r) => ({ role: r.role, content: r.content })));
 }
 
 async function trimHistory(scope, limit) {
@@ -207,7 +247,7 @@ export async function respond({ scope, userText, mode, remember = true, chatId =
           ...past,
           { role: 'user', content: userText },
           { role: 'assistant', content: answer },
-          { role: 'system', content: correctionNote() },
+          { role: 'system', content: correctionNote(verdict.reasons) },
         ],
         maxTokens: mode === 'secretary' ? NUM_PREDICT_SECRETARY : NUM_PREDICT_BOT,
         // Warmer than the first try: repeating the same text is what a low

@@ -52,7 +52,7 @@ Nothing here is an LLM judging an LLM. Every check is code you can read in an af
 
 Same handlers, same schema, same prompts. The local runtime adds a **control panel** in the browser; Telegram gets `/lang`, `/mode` and inline-button approvals.
 
-> **Status: v1.7 — experimental.** 214 unit tests and 48 end-to-end checks pass, the panel has been audited ([21 findings, all fixed](docs/panel-audit.md)), and every path has been exercised against a fake Telegram and a fake model. It has **not** yet been run against a live Telegram account or a real 1.7B model in this repository. Connect your own bot first, in draft mode, and watch the first ten replies before you trust it.
+> **Status: v1.7 — experimental.** 225 unit tests and 50 end-to-end checks pass, the panel has been audited ([21 findings, all fixed](docs/panel-audit.md)), and every path has been exercised against a fake Telegram and a fake model. It has **not** yet been run against a live Telegram account or a real 1.7B model in this repository. Connect your own bot first, in draft mode, and watch the first ten replies before you trust it.
 
 ## What it does
 
@@ -375,7 +375,7 @@ Talk to the bot in your private chat. In groups, only `@you`-addressed commands 
 | `/whatlearned <id>`, `/forgetfact <id>`, `/learn on\|off` | See and prune what it learned |
 | `/groups on\|off`, `/inline on\|off` | Group and inline behaviour |
 | `/remember <text>`, `/notes`, `/forget <id>` | Private notes (bot mode only) |
-| `/reset` | Clear bot-mode memory |
+| `/reset` · `/reset <chat_id>` | Clear your own memory, or one contact's |
 | `/prompt bot\|secretary [show\|default\|reset\|append <text>\|<text>]` | View or replace a system prompt ([docs/prompts.md](docs/prompts.md)) |
 | `/update`, `/update apply`, `/update rollback` | What is on GitHub, install it, undo the last install ([Updating](#updating)) |
 | `/panel`, `/model [name]`, `/setkey`, `/id`, `/waittest` | Setup and diagnostics |
@@ -434,8 +434,8 @@ tg-ai-secretary/
 ## Tests
 
 ```bash
-npm test            # 214 unit tests
-npm run selftest    # 48 end-to-end checks (fake Telegram + fake model)
+npm test            # 225 unit tests
+npm run selftest    # 50 end-to-end checks (fake Telegram + fake model)
 npm run hw          # machine report
 ```
 
@@ -467,6 +467,58 @@ What the numbers cover:
 - **Serverless quirk:** the Ollama key lives in the database there, because that runtime documents no secrets store. The local runtime reads it from `bot/.env` or the panel.
 
 ## Changelog
+
+### v1.7.6 — the same line, five times, and then silence
+
+A real Activity log, after the any-language release:
+
+```
+The model repeated itself (loop) for: سلام — من یک دستیار خودکار هستم و نمی‌توانم به زبان انگلیسی پاسخ دهم…
+Replaced a degenerate reply (loop).
+Reply to Shadi Sadeghi Razlighi (chat 74621273) failed: The model kept repeating itself, so nothing was sent.
+```
+
+Three separate faults, and the guard was only doing its job on the third.
+
+**1. The conversation had poisoned itself.** The sentence is *"I am an automated assistant and
+I cannot answer in English"*, written in fluent Persian, to a Persian message. It was produced
+once — badly — and then sent five times. From then on it sat in that chat's history five times,
+so it was the most likely thing the model wrote next, and every failure added another copy.
+The replies on disk are left alone; what the model is *shown* is now cleaned up: identical
+assistant turns collapse to the last one, an assistant turn that only hands the message back is
+dropped, and a stored "I cannot answer in X" is dropped outright. An old conversation heals
+itself without anyone touching it. Short turns ("ok", "بله") are never collapsed.
+
+**2. Nobody recognised that sentence as a failure.** It is not an echo and it is not a repeat of
+the previous answer *to the model's eye* — it was a stale canned line. It is now its own reason,
+`refusal`, matched by shape (`cannot/can't/نمی‌توانم/لا أستطيع/не могу/kann nicht…` + a verb of
+speaking + a language name) in the languages a 1.7B model actually produces it in. The retry
+gets a nudge aimed at that failure instead of the generic "don't copy the message" one, and the
+language line in the prompt now says out loud that the model can write the language — cheap, and
+it is the confusion that produced the sentence in the first place.
+
+**3. There was no way out of a stuck chat.** `/reset` only cleared your own conversation. There
+is now `/reset <chat_id>`, and the failure notice you receive names it. That matters less now
+that the history cleans itself, but a person should not need to know the internals to unstick
+one conversation.
+
+**Also fixed: what it "learns".** The same log showed two facts for a stranger:
+*"Shadi Sadeghi Razlighi is a technician"* and *"…'s city is not mentioned"*. Both are junk, and
+both were then injected into the prompt for that person.
+
+- **Absence statements are refused.** A fact about what the model could not find is not a fact
+  about the person: "not mentioned", "unknown", `نامشخص`, `ذکر نشده`.
+- **A fact has to be supported by the conversation it came from.** A 1.7B model asked *"what did
+  they tell you"* will invent a job or a city, and an invented fact gets repeated back to a
+  stranger as if they had said it. A fact is kept only if most of its content words appear in
+  the transcript. Paraphrase survives a light four-letter stem (`works`/`work`,
+  `nights`/`night`); invention does not, because none of its words were ever said. Works on
+  Persian too, where there are no spaces to split on.
+- **The extraction prompt forbids guessing**: no job, city, age or family unless stated, no
+  "unknown"/"not mentioned", no greetings, no narration of the conversation.
+- **Facts already stored under the old rules are filtered on the way out**, so an install that
+  already learned junk stops feeding it to the model without anyone clearing anything by hand.
+
 
 ### v1.7.5 — any language, not only the ones with a table
 

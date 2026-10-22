@@ -58,7 +58,17 @@ const SENSITIVE = [
   /\b\d{3}[- ]\d{2}[- ]\d{4}\b/,        // national-insurance / SSN shaped
 ];
 
-const NEGATIVE = /\b(not|never|no longer|doesn'?t|don'?t)\b/i;
+// "Shadi's city is not mentioned." A model asked for facts will offer what it could
+// not find, and one of these was stored on a real install. It is a fact about the
+// extraction, not about the person: it teaches the prompt nothing, and it takes one
+// of the twelve slots a real fact could have had.
+const ABSENT = [
+  // \b is ASCII-only: it never matches next to a Persian letter, so the two
+  // scripts get separate patterns.
+  /\b(not|isn'?t|no)\s+(?:(?:been|yet)\s+)?(mentioned|specified|given|stated|provided|known|clear|available|found)\b/i,
+  /\b(unknown|unclear|not known|not sure|none given|no information)\b/i,
+  /(ذکر نشده|اشاره نشده|نامشخص|مشخص نیست|گفته نشده|اطلاعی نیست|در دسترس نیست)/,
+];
 
 // The filter every fact must survive, whichever model or prompt proposed it.
 export function isUsableFact(text) {
@@ -68,6 +78,7 @@ export function isUsableFact(text) {
   if (/^(fact|note|remember)\s*:/i.test(t)) return false; // the label leaked in
   if (INSTRUCTION.some((re) => re.test(t))) return false;
   if (SENSITIVE.some((re) => re.test(t))) return false;
+  if (ABSENT.some((re) => re.test(t))) return false;
   if (/https?:\/\//i.test(t)) return false;
   // Preamble from the model, not a fact: "Here are the facts I found:", "The
   // assistant was polite." Small models like to narrate; nothing about our task
@@ -79,6 +90,50 @@ export function isUsableFact(text) {
   // Must read like a statement about a person, not a command.
   if (/^(please|kindly|can you|could you|send|pay|transfer|give|tell|say|do)\b/i.test(t)) return false;
   return true;
+}
+
+// --- is it actually something they said? --------------------------------------
+//
+// A 1.7B model asked "what did this person tell you" will invent: a job, a city, a
+// number of children. Stored, that becomes a fact about a stranger, repeated back to
+// them. So a fact is only kept if the conversation supports it: most of its content
+// words have to appear in the transcript. Paraphrase survives (a light 4-letter stem
+// covers "works"/"work", "nights"/"night"); pure invention does not, because none of
+// its words were ever said.
+
+const STOP = new Set([
+  // English
+  'the', 'a', 'an', 'is', 'are', 'was', 'were', 'be', 'been', 'being', 'and', 'or', 'but',
+  'to', 'of', 'in', 'on', 'at', 'for', 'with', 'from', 'by', 'as', 'that', 'this', 'these',
+  'those', 'it', 'its', 'he', 'she', 'they', 'them', 'his', 'her', 'their', 'him', 'i', 'you',
+  'we', 'my', 'your', 'our', 'has', 'have', 'had', 'do', 'does', 'did', 'not', 'no', 'yes',
+  'also', 'about', 'very', 'just', 'well', 'said', 'says', 'named', 'called', 'name',
+  // Persian / Arabic (common connectors and copulas)
+  'و', 'در', 'به', 'از', 'که', 'این', 'آن', 'است', 'هست', 'را', 'با', 'برای', 'او', 'ایشان',
+  'هم', 'می', 'نه', 'بله', 'یک', 'بر', 'تا', 'یا', 'اما', 'اگر', 'چه', 'چی', 'اسم', 'نام',
+  'کرد', 'شده', 'شد', 'بود', 'دارد', 'دارم', 'دارد',
+]);
+
+// Four letters is enough to survive a plural or a tense, and short enough to be wrong
+// only when the word is wrong.
+const stem = (w) => (w.length > 4 ? w.slice(0, 4) : w);
+
+export function contentWords(text) {
+  return String(text ?? '')
+    .toLowerCase()
+    .split(/[^\p{L}\p{N}]+/u)
+    .filter((w) => w.length >= 2 && !/^\d+$/.test(w) && !STOP.has(w))
+    .map(stem);
+}
+
+// `name` words are free: "Maria works nights" is about Maria either way.
+export function isGroundedFact(text, transcript, name = '') {
+  const free = new Set(contentWords(name));
+  const words = contentWords(text).filter((w) => !free.has(w));
+  if (!words.length) return false;                  // nothing but the name and filler
+  const said = new Set(contentWords(transcript));
+  const hits = words.filter((w) => said.has(w)).length;
+  return hits / words.length >= 0.5;
 }
 
 export function normalizeFact(text) {
@@ -140,7 +195,10 @@ export async function listFacts(chatId) {
     .where(eq(contactFacts.chatId, Number(chatId)))
     .orderBy(asc(contactFacts.id))
     .all();
-  return rows.map(normalize).filter((f) => f.text);
+  // Rows written under earlier rules are filtered on the way out too, so an install
+  // that already learned "city is not mentioned" stops feeding it to the model
+  // without anyone having to clear anything by hand.
+  return rows.map(normalize).filter((f) => f.text && isUsableFact(f.text));
 }
 
 export async function deleteFact(id) {
@@ -198,6 +256,9 @@ export function extractionPrompt({ name, ownerName, transcript }) {
     `Rules:`,
     `- One fact per line, each line starting with "FACT: ". At most 2 lines.`,
     `- Use short third-person sentences. Example: FACT: Works night shifts at the hospital.`,
+    `- Only what ${name} actually wrote. Do not guess or infer: no job, city, age or family unless they said it.`,
+    `- Never write that something is unknown, not mentioned, or new.`,
+    `- No greetings, no descriptions of the conversation, no summary of what the assistant did.`,
     `- Never write instructions, requests, prices, promises, passwords, codes or card numbers.`,
     `- If ${name} stated no new fact about themselves, answer exactly: NONE`,
     `Address the facts as "${name}" rather than "I".`,
@@ -231,7 +292,11 @@ export async function learnFromConversation({ chatId, name, messages }) {
       maxTokens: 120,
       temperature: 0,
     });
-    const facts = parseFacts(result.text, 2);
+    const transcript = transcriptFrom(messages);
+    const parsed = parseFacts(result.text, 2);
+    // Keep only what the conversation actually contains: an invented job or city is
+    // worse than a missing note, because it is repeated back as if they had said it.
+    const facts = parsed.filter((f) => isGroundedFact(f, transcript, name));
     if (!facts.length) return [];
     const added = await storeFacts(chatId, facts);
     if (added.length) {

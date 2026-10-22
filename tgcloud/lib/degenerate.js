@@ -85,6 +85,28 @@ function isLoop(answer, recentAnswers) {
   return false;
 }
 
+// "I am an automated assistant and I cannot answer in English."
+//
+// From a real transcript, in Persian, answering a Persian message: a 1.7B model that
+// got confused about the reply language gives up out loud instead of answering. It
+// is wrong - the model can write the language it just used to complain - and it is
+// the sentence that then gets stored and repeated. Matched by shape rather than by
+// exact wording, because it appears in every language the model knows.
+const CANT = /(cannot|can ?not|can't|unable to|not able to|نمی\s?توانم|نمی توانم|قادر نیستم|لا أستطيع|لا استطيع|не могу|kann nicht|no puedo|ne peux pas|yapamam)/i;
+const SPEAK = /(speak|speaking|answer|reply|respond|write|communicate|صحبت|پاسخ|جواب|نوشتن|أجيب|اجيب|الإجابة|الاجابة|إجابة|اجابة|أتحدث|اتحدث|говорить|отвечать|ответить|ответ|sprechen|antworten|hablar|responder|parler|répondre|konuş)/i;
+const LANGUAGE_WORD = /(english|persian|farsi|arabic|german|french|spanish|russian|turkish|chinese|japanese|korean|dutch|italian|portuguese|hindi|urdu|انگلیسی|فارسی|عربی|آلمانی|فرانسوی|اسپانیایی|روسی|ترکی|چینی|ژاپنی|هندی|اردو|английск|русск|персидск|englisch|deutsch|französisch|français|anglais|español|inglés|türkçe|italiano|português|nederlands|الإنجليزية|الانجليزية|الانجلیزیه|الانجليزيه)/i;
+
+export function isLanguageRefusal(answer) {
+  // Tested twice: once on the text as written, and once after normalise(), because
+  // the normaliser folds Arabic spellings into Persian ones (ي -> ی, ة -> ه) and
+  // Persian arrives with a ZWNJ inside "نمی‌توانم". Neither form alone catches both.
+  const raw = String(answer ?? '').toLowerCase();
+  const folded = normalise(answer);
+  if (!folded) return false;
+  const has = (re) => re.test(raw) || re.test(folded);
+  return has(CANT) && has(SPEAK) && has(LANGUAGE_WORD);
+}
+
 // The same sentence twice inside one answer.
 function isStutter(answer) {
   const s = sentences(answer);
@@ -105,6 +127,7 @@ export function analyseAnswer({ answer, userText = '', recentAnswers = [] } = {}
   if (isEcho(text, userText)) reasons.push('echo');
   if (isLoop(text, recentAnswers)) reasons.push('loop');
   if (isStutter(text)) reasons.push('stutter');
+  if (isLanguageRefusal(text)) reasons.push('refusal');
   return { ok: reasons.length === 0, reasons };
 }
 
@@ -138,7 +161,21 @@ export function degenerateReply(lang = 'en') {
 
 // The nudge for the second attempt. It goes in as a system message, after the
 // conversation, because that is what a small model attends to most.
-export function correctionNote() {
-  return 'The previous attempt is discarded: it repeated the user instead of answering. '
-    + 'Answer in your own words, do not copy the message, and if you have nothing to say, say briefly that you did not understand.';
+// The nudge sent with the retry. `reasons` lets it name what actually went wrong:
+// telling a model "do not copy the message" when it just claimed it cannot speak
+// English is a nudge in the wrong direction, and costs a second slow call to learn
+// nothing.
+export function correctionNote(reasons = []) {
+  const parts = ['The previous attempt is discarded.'];
+  if (reasons.includes('refusal')) {
+    parts.push('You can read and write the language the person used - you just wrote it - '
+      + 'so never say you cannot answer in a language, and never mention the language at all. '
+      + 'Answer the question itself.');
+  }
+  if (reasons.includes('echo') || reasons.includes('loop') || reasons.includes('stutter')) {
+    parts.push('It repeated the message or your own earlier reply instead of answering.');
+  }
+  parts.push('Answer in your own words, do not copy the message, and if you have nothing to say, '
+    + 'say briefly that you did not understand.');
+  return parts.join(' ');
 }
