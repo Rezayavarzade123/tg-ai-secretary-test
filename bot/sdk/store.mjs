@@ -5,7 +5,7 @@ import path from 'node:path';
 //
 // Why not a real database? The bot's data is a few hundred rows (settings, notes,
 // the last messages, drafts). A JSON file needs no native module, so the same
-// checkout runs on a PS4, a Raspberry Pi and a laptop; it is trivially backed up
+// checkout runs on a console, a Raspberry Pi and a laptop alike; it is trivially backed up
 // (one file) and you can read it with `cat` when something looks wrong. The query
 // builder in ./db.mjs mirrors the subset of the platform's `sdk/db` the bot uses,
 // so the handler code is identical to the serverless version.
@@ -59,7 +59,7 @@ export function tableData(name) {
 }
 
 // Writes are cheap at this size, and doing them synchronously means a crash or a
-// power cut (the PS4's favourite trick) cannot lose a message that was answered.
+// power cut cannot lose a message that was answered.
 export function save({ immediate = true } = {}) {
   if (!loaded) return;
   if (!immediate) {

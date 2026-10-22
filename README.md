@@ -4,7 +4,7 @@ A Telegram AI assistant and secretary that can answer as **your** automated assi
 
 | | **Local runtime** (new) | **Telegram Serverless** |
 |---|---|---|
-| Where it runs | Your own machine — a Linux PC, a mini-PC, a Raspberry Pi, even a PS4 with Linux | Telegram's cloud |
+| Where it runs | Any Linux you own — a PC, a mini-PC, a Raspberry Pi, or a jailbroken PS4 running Linux | Telegram's cloud |
 | Brain | **A small model on your own hardware** (llama.cpp / Ollama), no API key | Ollama's hosted API with your key |
 | Secretary mode | Yes | Yes |
 | Cost | Electricity | Your Ollama plan |
@@ -91,7 +91,20 @@ cmake --build build -j"$(nproc)"
 
 `-np 1` matters: one slot keeps the prompt cache warm, and the bot serialises its own model calls to match. Ollama also works — set the server URL to `http://127.0.0.1:11434/v1`.
 
-For the PS4 specifics (build flags, thermals, boot injection, systemd units), see **[docs/local.md](docs/local.md)**; for the sizing and design reasoning, **[docs/plan-local-ps4.md](docs/plan-local-ps4.md)**.
+**Which model and which build flags?** Don't guess from a table — ask the machine:
+
+```bash
+npm run hw              # CPU, SIMD, memory → threads, build flags, model, llama-server line
+npm run hw -- --bench    # ...and measure a running server (prefill and decode tok/s)
+```
+
+It reads `/proc/cpuinfo` and `/proc/meminfo` and decides from the flags it finds. Linux on
+a PS4 is Linux: there is no console build and no console code path, only a slower CPU and
+a memory budget. The one fact that changes the install is AVX2 — if the CPU has AVX but
+not AVX2, build llama.cpp on the box instead of downloading a binary.
+
+Full procedure, thermals and boot injection: **[docs/local.md](docs/local.md)**; design and
+sizing reasoning: **[docs/plan-local-ps4.md](docs/plan-local-ps4.md)**.
 
 ### The control panel
 
@@ -142,8 +155,9 @@ BOT_STATE_DIR=./bot/state-demo PANEL_TOKEN=demo npm start
 ### Tests
 
 ```bash
-npm test          # 69 unit tests: text, prompts, delay, typing, language, guards, local db,
-                  # panel settings, v1.2 features, and static checks on the panel's own front end
+npm test          # 83 unit tests: text, prompts, delay, typing, language, guards, local db,
+                  # panel settings, v1.2 features, machine detection, and static checks
+                  # on the panel's own front end
 npm run selftest  # 27 end-to-end checks with fake Telegram + fake model
 ```
 
@@ -237,6 +251,7 @@ tg-ai-secretary/
 │  ├─ env.mjs                     tiny .env reader
 │  ├─ sdk/                        store (JSON), query builder, Telegram client
 │  ├─ panel/                      control panel: server.mjs + ui.html
+│  ├─ hardware.mjs                what this CPU/memory can do → build flags, model, threads
 │  ├─ selftest.mjs                end-to-end test with a fake Telegram and model
 │  ├─ seed-demo.mjs               sample data for looking at the panel
 │  └─ state/                      your data (git-ignored): bot.json, panel-token
@@ -271,6 +286,7 @@ tg-ai-secretary/
 
 ```bash
 npm test && npm run selftest   # do this after touching handlers, guards or the panel
+npm run hw                     # machine report: flags, memory, model, threads
 npm start                      # local runtime
 npm run dev                    # same, with --watch
 npx tgcloud status             # serverless: what changed vs the deployed copy
@@ -296,8 +312,8 @@ Rules of the serverless runtime: relative imports must end in `.js`, there are n
 ## Known limits
 
 - **Small models are small.** Below 2B, instruction-following is uneven: expect drift, occasional invented details and weak reasoning. That is why drafts are the default and the guard is code, not prompt text.
-- **The PS4 has no usable GPU compute** for this (no ROCm for GCN 1.0). CPU-only, AVX but no AVX2/FMA. See the sizing notes in [docs/plan-local-ps4.md](docs/plan-local-ps4.md).
-- **A console needs the exploit re-injected after every power cycle.** A local runtime on a PS4 is not a 24/7 service.
+- **CPU only.** Old console GPUs have no usable compute path (no ROCm for GCN 1.0, no practical Vulkan), so the model runs on the CPU. `npm run hw` reports exactly what the CPU supports; on AVX-only silicon that means building llama.cpp from source.
+- **A console needs its exploit re-injected after every power cycle**, which is the one way the box differs from a PC. On that hardware the runtime is not a true 24/7 service.
 - **No scheduler:** there are no proactive reminders or daily briefings; the bot only reacts to messages.
 - Text only. Photos, voice and stickers are announced to you, not answered.
 - Replies are plain text (model output breaks Markdown).

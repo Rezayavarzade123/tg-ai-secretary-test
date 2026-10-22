@@ -140,6 +140,27 @@ function render() {
   S.dirty = false;
 }
 
+// The machine card. Deliberately plain: what the CPU is, whether it has AVX2,
+// how much memory, and which model that implies — the same four facts the CLI
+// prints, so the panel and `npm run hw` cannot disagree.
+function machineCard(m) {
+  if (!m) return '<p class="muted">Not read yet.</p>';
+  const simd = Object.entries(m.vec || {}).filter(([, on]) => on).map(([k]) => k.toUpperCase());
+  const ram = `${(m.memMb / 1024).toFixed(1)} GB`;
+  return `
+    <div class="grid cols-2">
+      ${stat('CPU', `${m.cpu.cores} cores`, true)}
+      ${stat('Memory', ram, true)}
+      ${stat('AVX2', m.vec.avx2 ? 'yes' : 'no', true, m.vec.avx2 ? 'ok' : 'warn')}
+      ${stat('Threads', String(m.threads), true)}
+    </div>
+    <p class="small muted" style="margin:10px 0 0">${esc(m.cpu.modelName || 'unknown CPU')} · ${esc(simd.join(' ') || 'no SIMD detected')} · ${esc(m.kernel || '')}</p>
+    <p class="small" style="margin:6px 0 0">Suggested brain: <strong>${esc(m.model.name)} ${esc(m.model.quant)}</strong>, <code>-c ${m.model.ctx} -t ${m.threads}</code></p>
+    ${m.warnings && m.warnings.length
+      ? `<div class="banner info" style="margin-top:10px">${m.warnings.map((w) => esc(w)).join('<br>')}</div>`
+      : ''}`;
+}
+
 function viewLatency() {
   const st = S.state;
   const m = st.metrics;
@@ -162,6 +183,12 @@ function viewLatency() {
       </div>
       <p class="hint small" style="margin:10px 0 0">Averaged over the last ${m.count} replies${m.timedCalls ? '' : ' (this server reports no timings, so no tok/s)'}.</p>
       ` : '<p class="muted">No replies yet. Run the model test above, or send the bot a message.</p>'}
+    </div>
+
+    <div class="card">
+      <h2>This machine</h2>
+      <p class="hint">Read from the CPU and memory it is running on. Nothing here is console-specific: the same panel makes the same decision on a laptop or a mini-PC with the same flags.</p>
+      ${machineCard(st.machine)}
     </div>
 
     <div class="card">

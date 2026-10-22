@@ -8,7 +8,7 @@ export const runtime = {
   lastErrorAt: 0,
   counts: { message: 0, business_message: 0, business_connection: 0, callback_query: 0, other: 0 },
   bot: null,            // getMe() result
-  panelUrl: '',         // includes the access token (console only)
+  panelUrl: '',         // includes the access token (this process only)
   panelUrlPublic: '',   // safe to store and share on the LAN
   panelAvailable: true, // false when the port could not be bound
   log: [],              // last N log lines, for the panel

@@ -33,8 +33,21 @@ import { metricsSummary, recentMetrics } from '../../tgcloud/lib/metrics.js';
 import { parseWindow, describeWindow, inQuietHours } from '../../tgcloud/lib/hours.js';
 import { runProbe, saveProbe, lastProbe, probeVerdict } from '../../tgcloud/lib/probe.js';
 import { getStateFile, stats, backup, lockInfo } from '../sdk/store.mjs';
+import { inspect as inspectMachine } from '../hardware.mjs';
 import { verifyToken } from '../sdk/telegram.mjs';
 import { runtime, uptimeSeconds, log } from '../runtime.mjs';
+
+// The machine report changes only when the hardware does (i.e. never), so it is
+// read once a minute instead of on every poll.
+let machineCache = null;
+let machineAt = 0;
+function machine() {
+  if (!machineCache || Date.now() - machineAt > 60000) {
+    machineCache = inspectMachine();
+    machineAt = Date.now();
+  }
+  return machineCache;
+}
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ASSETS = {
@@ -486,7 +499,7 @@ async function buildState() {
     counts: runtime.counts,
     bot: runtime.bot ? { id: runtime.bot.id, username: runtime.bot.username, firstName: runtime.bot.first_name } : null,
     owner: { id: await ownerId(), name: await ownerName() },
-    // The public address only. The tokenised URL stays on the console so that a
+    // The public address only. The tokenised URL stays on this machine so that a
     // screenshot of this page cannot hand over the panel.
     panel: {
       available: runtime.panelAvailable !== false,
@@ -496,6 +509,7 @@ async function buildState() {
       fixedToken: Boolean(process.env.PANEL_TOKEN),
     },
     model: { provider: ms.provider, baseUrl: ms.baseUrl, name: ms.model },
+    machine: machine(),
     llm,
     queue: { ...llmQueue },
     system: {
@@ -778,7 +792,7 @@ export async function startPanel({ port = 8787, host = '0.0.0.0', lanAddress = '
       runtime.panelPort = actual;
       runtime.panelAvailable = true;
       runtime.panelUrlPublic = `http://${lanAddress}:${actual}`;
-      // The tokenised URL is for this console only — never for the page or the database.
+      // The tokenised URL is for this machine only — never for the page or the database.
       runtime.panelUrl = `${runtime.panelUrlPublic}/?token=${ACCESS_TOKEN}`;
       log('info', `control panel on ${runtime.panelUrlPublic}  (token: ${process.env.PANEL_TOKEN ? 'PANEL_TOKEN' : tokenFile()})`);
       resolve();

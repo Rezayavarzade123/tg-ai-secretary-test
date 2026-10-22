@@ -2,8 +2,9 @@
 //
 //   node --import ./bot/register.mjs bot/runner.mjs
 //
-// Why long polling instead of a webhook: a PS4 under a TV has no public HTTPS
-// address, and polling needs no tunnel, no open port and no certificate. It also
+// Why long polling instead of a webhook: a box under a TV, behind a home router,
+// has no public HTTPS address — and that is true of any home machine, not just a
+// console. Polling needs no tunnel, no open port and no certificate. It also
 // makes the bot impossible to reach from the internet, which is the right default
 // for something that answers your private messages.
 

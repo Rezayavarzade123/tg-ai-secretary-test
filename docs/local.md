@@ -1,9 +1,14 @@
 # Running the secretary on your own machine
 
 This is the runbook for the local runtime: what to install, how to start it, how to
-connect your account, and what to check when something is wrong. It assumes a
-**jailbroken PS4 with Linux** but works the same on any Linux box (a mini-PC will be
-much faster).
+connect your account, and what to check when something is wrong.
+
+There is no console build, no console branch and no console-specific code. A
+jailbroken PS4 running Linux is an ordinary x86-64 Linux machine, and everything below
+is the same procedure on a laptop, a mini-PC or a NAS. What differs between machines is
+only how fast they are — measured flags, cores and memory — and §2b measures it instead
+of assuming it. The console-specific parts are the ones that happen *before* Linux
+boots (see §8), and they are about ops, not about this software.
 
 Design reasoning, sizing numbers and the phased plan are in
 [plan-local-ps4.md](plan-local-ps4.md). Prompts are in [prompts.md](prompts.md).
@@ -27,15 +32,41 @@ server listens on loopback only.
 
 | What | Why | Check |
 |---|---|---|
-| Linux with a modern kernel | see the [PS4Linux docs](https://github.com/Hakkuraifu/PS4Linux-Documentation) for the kernel that matches your console | `uname -r` |
+| Linux, x86-64 or ARM64 | any distribution with a kernel from this decade; on a console, see the [PS4Linux docs](https://github.com/Hakkuraifu/PS4Linux-Documentation) for a kernel that boots | `uname -m` |
 | Node.js ≥ 18 | the runtime is plain ESM, no dependencies | `node -v` |
 | llama.cpp build | the model server | `llama-server --version` |
 | ~1.5 GB free RAM | 1.7B Q4 weights + 4k KV cache + Node | `free -h` |
 | Correct clock | the prompt contains the date; `/pause` and the reply delay compare timestamps | `date` |
-| A USB 3.0 SSD (PS4) | internal HDD support is missing on several revisions, and mmap from a thumb drive stalls | `lsblk` |
+| An SSD rather than a thumb drive | the model is mmap'd, so a slow stick stalls the first token of every prompt | `lsblk -d -o name,rota` |
 
-On a PS4, use **Ethernet**, not Wi-Fi: Linux Wi-Fi support depends on the hardware
-revision, and a wired link avoids a whole class of reconnect bugs.
+Prefer a wired link over Wi-Fi whatever the machine is. On console hardware this is more
+than a preference — Linux Wi-Fi support there depends on the revision — but a cable
+avoids a whole class of reconnect bugs on a laptop too.
+
+### 2b. What does this box actually have?
+
+```bash
+npm run hw
+```
+
+It reads `/proc/cpuinfo` and `/proc/meminfo`, prints the CPU, its SIMD instruction sets,
+memory and swap, and then *derives* the settings from those facts: how many threads, how
+to build llama.cpp, which model fits, and the exact `llama-server` command line. It never
+looks at the machine's name, so the answer depends on the CPU, not on the box it is in.
+
+The one fact that changes the install is **AVX2**. Every prebuilt llama.cpp download —
+and Ollama's default CPU build — assumes AVX2 and will crash or refuse to start on a CPU
+without it. If the report says `AVX` but not `AVX2`, build llama.cpp on the machine
+itself (`-DGGML_NATIVE=ON`); that compiles for exactly the instructions it finds. Node
+itself only needs AVX, so the bot runs either way.
+
+Once a model server is up, measure it rather than trusting a table:
+
+```bash
+npm run hw -- --bench     # ~4 short requests, reports prefill and decode tok/s
+```
+
+Nothing in this project prints a throughput number it has not measured.
 
 ## 3. Start the model server
 
@@ -230,9 +261,12 @@ no timings is stored as untimed and excluded from the averages, never estimated.
 - If you migrate from the serverless deployment, re-enter the prompts, notes,
   `/secretaryinfo` and delay: there is no automatic importer.
 
-## 8. Operating a console as a server
+## 8. If the box is a console: the parts that are not Linux
 
-1. **Boot injection.** The exploit must be re-run from the PS4 browser after every
+Everything under this heading happens before Linux starts, which is the only place a
+console differs from a PC. The software above does not care.
+
+1. **Boot injection.** The exploit must be re-run from the console's browser after every
    power cycle. A power cut means the secretary is silently offline until someone
    fixes it. Practical mitigation: leave it powered, and treat "the bot stopped
    replying" as the alarm. A smart plug does not help — injection needs a person.

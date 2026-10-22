@@ -1,5 +1,13 @@
 # Plan: run the secretary bot entirely on a Linux PS4 with a ≤2B local model
 
+> **Read this first.** Linux on a PS4 is Linux. Nothing in this repository has a
+> console-specific code path, a console build flag or a console dependency, and the
+> software described below runs unchanged on a laptop or a mini-PC. The console matters
+> for exactly three reasons: the CPU is slow and lacks AVX2, memory is shared with the
+> GPU, and the exploit has to be re-injected at boot. Everything else here is sizing and
+> ops. For the measurements that replace the estimates in this file, run `npm run hw`
+> (§3.1's numbers are the plan's expectations, not results).
+
 Status: **Phases 1–4 implemented** (see §0). Written 2026-10-22 on branch
 `arena/7f86e825-tg-ai-secretary-test`.
 

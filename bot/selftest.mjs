@@ -453,6 +453,13 @@ await check('the control panel answers with live state, and never leaks its toke
   assert.ok(!JSON.stringify(state).includes('selftest-token'), 'the panel token is never sent back to the page');
   assert.ok(state.panel.url && !state.panel.url.includes('token='), 'only the public URL is shared');
 
+  // The machine report is derived from /proc, not from a list of known machines.
+  assert.ok(state.machine && state.machine.cpu.cores >= 1, 'the panel reports the CPU it is running on');
+  assert.ok(['x64', 'arm64'].includes(state.machine.cpu.arch), 'and its architecture');
+  assert.ok(state.machine.model && state.machine.model.name, 'and which <2B model fits');
+  assert.ok(Array.isArray(state.machine.warnings), 'and what to watch out for');
+  assert.equal(typeof state.machine.threads, 'number');
+
   // Security headers on both the page and the API.
   for (const path of ['/', '/api/state', '/ui.js', '/ui.css']) {
     const r = await realFetch(base + path, { headers: AUTH });

@@ -1,8 +1,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-// A 30-line .env reader, because the target machine is a PS4 and every dependency
-// is another thing that can fail to build there.
+// A 30-line .env reader. The target is a machine with a few gigabytes to spare, so
+// every dependency is another thing that can fail to build there.
 //
 // Looked up in this order (first value wins, real environment variables always win):
 //   bot/.env  ->  ./.env  ->  /etc/secretary-bot.env
