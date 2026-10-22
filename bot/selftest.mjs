@@ -181,6 +181,27 @@ await check('pressing Send posts the reply from the owner account', async () => 
   assert.ok(answered.some((a) => /Sent/.test(a.text ?? '')));
 });
 
+await check('/send writes to a contact from your own account, with no draft', async () => {
+  const before = sent.length;
+  await botMessage({ message_id: 24, chat: { id: OWNER, type: 'private' }, from: { id: OWNER, first_name: 'Sam' }, text: '/send Sara running 10 minutes late' });
+  const newMessages = sent.slice(before);
+  const toContact = newMessages.filter((m) => m.chat_id === STRANGER);
+  assert.equal(toContact.length, 1, 'exactly one message to the contact');
+  assert.equal(toContact[0].business_connection_id, 'conn-1', 'sent as the account, not as the bot');
+  assert.match(toContact[0].text, /running 10 minutes late/);
+  assert.ok(newMessages.some((m) => m.chat_id === OWNER && /Sent to Sara/.test(m.text)), 'the owner is told what went out');
+  assert.equal((await listDrafts({ status: 'pending' })).length, 0, 'and nothing was drafted for approval');
+});
+
+await check('/send refuses what it cannot resolve, and says why', async () => {
+  const before = sent.length;
+  await botMessage({ message_id: 25, chat: { id: OWNER, type: 'private' }, from: { id: OWNER, first_name: 'Sam' }, text: '/send Nobody at all' });
+  const reply = sent.slice(before).at(-1);
+  assert.equal(reply.chat_id, OWNER);
+  assert.match(reply.text, /do not know anyone called "Nobody"/);
+  assert.match(reply.text, /\/contacts/, 'it points at the list of people it does know');
+});
+
 await check('Regenerate asks the model again and keeps the draft pending', async () => {
   await businessMessage({
     business_connection_id: 'conn-1',
