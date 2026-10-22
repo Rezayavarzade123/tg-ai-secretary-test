@@ -9,6 +9,8 @@
 // for something that answers your private messages.
 
 import os from 'node:os';
+import fs from 'node:fs';
+import path from 'node:path';
 import { api, setBotToken, botToken } from './sdk/telegram.mjs';
 import { load, save, backup, getStateFile, acquireLock, releaseLock, externalWrite } from './sdk/store.mjs';
 import { getSetting, setSetting } from '../tgcloud/lib/settings.js';
@@ -39,6 +41,19 @@ function lanAddress() {
   return (preferred ?? candidates[0])?.address ?? '127.0.0.1';
 }
 
+// The token, in one place: the state file the panel writes, or the one from the
+// environment. Reading it here means the banner can never disagree with the file.
+function panelToken() {
+  if (process.env.PANEL_TOKEN) return process.env.PANEL_TOKEN;
+  if (runtime.panelUrl && runtime.panelUrl.includes('token=')) return runtime.panelUrl.split('token=')[1];
+  try {
+    const file = path.join(path.dirname(getStateFile()), 'panel-token');
+    return fs.readFileSync(file, 'utf8').trim();
+  } catch {
+    return '(see bot/state/panel-token)';
+  }
+}
+
 function banner() {
   const url = runtime.panelAvailable
     ? (runtime.panelUrlPublic || `http://${lanAddress()}:${runtime.panelPort}`)
@@ -52,7 +67,10 @@ function banner() {
     `  model      ${runtime.model} (${runtime.provider})`,
     `  server     ${runtime.baseUrl}`,
     `  panel      ${url}`,
-    `  token      ${runtime.panelUrl && runtime.panelUrl.includes('token=') ? runtime.panelUrl.split('token=')[1] : '(see bot/state/panel-token)'}`,
+    // The token twice on purpose: once to read, and once as the URL you can open.
+    // Most support questions about this panel used to be "which token?".
+    `  token      ${panelToken()}`,
+    `  open       ${url}/?token=${panelToken()}`,
     `  state      ${getStateFile()}`,
     '  ─────────────────────────────────────────────',
     '  Ctrl+C to stop.',
