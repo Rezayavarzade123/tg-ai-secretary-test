@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { parseCpuInfo, parseMemInfo, recommend, benchmark, formatReport } from '../bot/hardware.mjs';
+import { parseCpuInfo, parseMemInfo, recommend, benchmark, formatReport, inspect, parseFlagString } from '../bot/hardware.mjs';
 
 // Real /proc/cpuinfo shapes, trimmed. The point of these tests is that the
 // recommendation follows the *measured* flags and cores, never the name of the
@@ -210,4 +210,57 @@ test('a measured report shows both directions', () => {
   assert.match(text, /prefill\s+12\.5 tok\/s/);
   assert.match(text, /decode\s+18\.2 tok\/s/);
   assert.match(text, /41000 ms/);
+});
+
+// --- machines without /proc: Windows, macOS, containers -----------------------
+//
+// Windows has no /proc/cpuinfo, and os.cpus() carries no flags, so the old code
+// read "no flags" as "no AVX2" and warned confidently about a CPU it had never
+// measured. install.ps1 measures with kernel32 and passes the answer in; without
+// that, the report must say "not measured".
+
+test('flags supplied by the Windows installer are used, and said to be', () => {
+  const r = inspect({ cpuInfo: '', memInfo: '', cpuFlags: 'ssse3 sse4_1 sse4_2 avx avx2 avx512f', cpuFlagsSource: 'kernel32' });
+
+  assert.equal(r.vec.detected, true);
+  assert.equal(r.vec.avx2, true);
+  assert.equal(r.cpu.flagsSource, 'kernel32');
+  assert.ok(!r.warnings.some((w) => /No AVX2/.test(w)), 'a measured AVX2 machine must not be accused of lacking it');
+
+  const text = formatReport(r);
+  assert.match(text, /simd\s+.*AVX2/);
+  assert.match(text, /from kernel32/);
+});
+
+test('without any source the report says unmeasured, not "no AVX2"', () => {
+  const r = inspect({ cpuInfo: '', memInfo: '', cpuFlags: '' });
+
+  assert.equal(r.vec.detected, false);
+  assert.ok(!r.warnings.some((w) => /No AVX2/.test(w)), 'unknown is not absent');
+  const warning = r.warnings.find((w) => /could not be measured/.test(w));
+  assert.ok(warning, 'it should say the flags could not be measured');
+  assert.match(warning, /SECRETARY_CPU_FLAGS/, 'and name the way to fix it');
+
+  const text = formatReport(r);
+  assert.match(text, /simd\s+not measured/);
+  assert.match(text, /build here if you cannot confirm AVX2/);
+});
+
+test('kernel32 cannot report FMA, so its absence must not raise the FMA warning', () => {
+  const windows = inspect({ cpuInfo: '', memInfo: '', cpuFlags: 'avx avx2', cpuFlagsSource: 'kernel32' });
+  assert.equal(windows.vec.fma, false);
+  assert.ok(!windows.warnings.some((w) => /FMA/.test(w)), 'not measured is not the same as not present');
+
+  // ...but a real /proc report with AVX2 and no FMA is still worth mentioning.
+  const linux = recommend({ arch: 'x64', flags: ['avx2', 'avx'], logical: 8, physical: 8, memMb: 8000 });
+  assert.ok(linux.warnings.some((w) => /FMA/.test(w)));
+});
+
+test('flag strings are normalised, whatever a shell or API produces', () => {
+  assert.deepEqual(parseFlagString('sse4_2 avx avx2'), ['sse4_2', 'avx', 'avx2']);
+  assert.deepEqual(parseFlagString('SSE4.2, AVX2;avx'), ['sse4_2', 'avx2', 'avx']);
+  assert.deepEqual(parseFlagString(''), []);
+  assert.deepEqual(parseFlagString(null), []);
+  // asimd is ARM's name for NEON; either spelling must work.
+  assert.equal(recommend({ arch: 'arm64', flags: parseFlagString('asimd'), logical: 4, physical: 4, memMb: 8000 }).vec.neon, true);
 });

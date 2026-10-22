@@ -178,7 +178,15 @@ OS=$(uname -s)
 ARCH=$(uname -m)
 case "$OS" in
   Linux) ok "Linux, $ARCH" ;;
-  *) warn "This is $OS. The bot is plain Node and should run, but the service install assumes Linux." ;;
+  *)
+    warn "This is $OS. install.sh is the Linux installer: it writes a systemd unit."
+    if [ "$OS" = "MINGW64_NT-10.0" ] || [ "$OS" = "MSYS_NT-10.0" ] || [ -n "${MSYSTEM:-}" ] || [ -d /c/Windows ]; then
+      warn "On Windows use install.ps1 instead - it schedules a Task and sets an ACL:"
+      say "    powershell -ExecutionPolicy Bypass -File .\install.ps1"
+      die "Nothing was installed."
+    fi
+    warn "The bot is plain Node and should run, but the service install assumes Linux."
+    ;;
 esac
 case "$ARCH" in
   x86_64|amd64|aarch64|arm64|armv7l) ;;

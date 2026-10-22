@@ -1074,6 +1074,57 @@ await check('the tg-secretary command reads a real install and refuses a fake on
   assert.ok(refused, 'a path that is not an install must be refused by name');
 });
 
+await check('the Windows scripts are present, complete and self-consistent', async () => {
+  const fs2 = await import('node:fs');
+  const path2 = await import('node:path');
+  const root = process.cwd();
+
+  for (const file of ['install.ps1', 'uninstall.ps1', path2.join('bin', 'tg-secretary.ps1'), path2.join('bin', 'tg-secretary.cmd')]) {
+    const full = path2.join(root, file);
+    assert.ok(fs2.existsSync(full), `${file} should exist`);
+    assert.ok(fs2.statSync(full).size > 0, `${file} should not be empty`);
+  }
+
+  // Balanced brackets, with PowerShell's string/comment rules: the check that
+  // catches the typo a Linux dev box cannot otherwise see.
+  const balance = (text) => {
+    let depth = 0;
+    let i = 0;
+    while (i < text.length) {
+      const c = text[i];
+      if (c === '<' && text[i + 1] === '#') {
+        const end = text.indexOf('#>', i + 2);
+        if (end < 0) return false;
+        i = end + 2;
+        continue;
+      }
+      if (c === '#') { const nl = text.indexOf('\n', i); i = nl < 0 ? text.length : nl; continue; }
+      if (c === "'" || c === '"') {
+        i += 1;
+        while (i < text.length) {
+          if (text[i] === c) { if (text[i + 1] === c) { i += 2; continue; } break; }
+          if (text[i] === '`' && c === '"') { i += 2; continue; }
+          i += 1;
+        }
+        i += 1;
+        continue;
+      }
+      if (c === '{' || c === '(' || c === '[') depth += 1;
+      if (c === '}' || c === ')' || c === ']') { depth -= 1; if (depth < 0) return false; }
+      i += 1;
+    }
+    return depth === 0;
+  };
+  for (const file of ['install.ps1', 'uninstall.ps1', path2.join('bin', 'tg-secretary.ps1')]) {
+    assert.ok(balance(fs2.readFileSync(path2.join(root, file), 'utf8')), `${file} should have balanced brackets`);
+  }
+
+  // The installer promises PowerShell 5.1, so it may not use PowerShell 7 syntax.
+  const ps = fs2.readFileSync(path2.join(root, 'install.ps1'), 'utf8');
+  assert.match(ps, /#Requires -Version 5\.1/);
+  assert.ok(!/^\s*#.*&&/m.test(ps.replace(/#.*/g, '')), 'no && operator');
+});
+
 const failed = results.filter((r) => !r.ok);
 console.log('──────────────────────────────────────────');
 console.log(`${results.length - failed.length}/${results.length} checks passed`);

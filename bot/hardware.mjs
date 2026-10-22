@@ -17,6 +17,17 @@
 //
 // The rule from the rest of the project applies here too: no invented numbers.
 // If a speed has not been measured, it is reported as not measured.
+//
+// That includes the CPU flags. On Linux they come from /proc/cpuinfo. Windows has
+// no /proc, and os.cpus() carries no flags at all, so on Windows the installer
+// measures them with IsProcessorFeaturePresent and passes them in:
+//
+//   SECRETARY_CPU_FLAGS="sse4_2 avx avx2"     (space or comma separated)
+//   SECRETARY_CPU_FLAGS_SOURCE=kernel32
+//
+// Without either source this file says "could not be measured" rather than
+// claiming the CPU has no AVX2 — the two are different, and the second one is the
+// difference between a working install and an hour of debugging.
 
 import fs from 'node:fs';
 import os from 'node:os';
@@ -69,7 +80,13 @@ export function parseMemInfo(text) {
 // Everything here is a rule about the CPU and memory we just measured, not about
 // the shape of the box.
 
-export function recommend({ arch, flags = [], logical = 1, physical = 1, memMb = 0, swapMb = 0, cpuModel = '' }) {
+export function recommend({
+  arch, flags = [], logical = 1, physical = 1, memMb = 0, swapMb = 0, cpuModel = '',
+  // `flagsKnown: false` means "nothing told us", which is not the same as "the CPU
+  // has nothing". Defaults to whether we were given any flags at all.
+  flagsKnown = flags.length > 0,
+  flagsSource = '',
+}) {
   const has = (f) => flags.includes(f);
   const cores = Math.max(1, physical || logical || 1);
 
@@ -81,24 +98,39 @@ export function recommend({ arch, flags = [], logical = 1, physical = 1, memMb =
     // AVX-512 exists on some x86 CPUs; nothing in this project requires it.
     avx512: has('avx512f'),
     neon: has('asimd') || has('neon'),
+    // Whether the line above means anything. False = nobody measured.
+    detected: Boolean(flagsKnown),
   };
 
   const warnings = [];
   if (arch !== 'x64' && arch !== 'arm64') {
     warnings.push(`${arch} is not a supported architecture: llama.cpp builds for x86-64 or ARM64.`);
   }
-  if (arch === 'x64' && !vec.avx2) {
+  if (arch === 'x64' && !vec.detected) {
+    // The important case: an unmeasured CPU must not be reported as a CPU without
+    // AVX2. Say what is unknown, and how to find out.
+    warnings.push(
+      'SIMD capabilities could not be measured here: no /proc/cpuinfo and no SECRETARY_CPU_FLAGS. ' +
+      'Prebuilt llama.cpp downloads assume AVX2, so this report is not proof either way — ' +
+      'on Windows run the installer (it measures them), elsewhere check with: ' +
+      "grep -o 'avx2' /proc/cpuinfo | head -1"
+    );
+  }
+  if (arch === 'x64' && vec.detected && !vec.avx2) {
     warnings.push(
       'No AVX2 on this CPU. Prebuilt llama.cpp downloads — and Ollama\u2019s default CPU build — assume AVX2 ' +
       'and will crash or refuse to start. Build llama.cpp on this machine instead ' +
       '(-DGGML_NATIVE=ON); that compiles for exactly these instructions.'
     );
   }
-  if (arch === 'x64' && !vec.avx) {
+  if (arch === 'x64' && vec.detected && !vec.avx) {
     warnings.push('No AVX at all: expect roughly half the throughput of an AVX CPU and use a 0.6B model.');
   }
-  if (!vec.fma && vec.avx2) {
-    warnings.push('AVX2 without FMA is unusual; some BLAS paths will be slower than the flags suggest.');
+  if (vec.detected && !vec.fma && vec.avx2) {
+    // kernel32 has no FMA feature bit, so a Windows report must not trigger this.
+    if (flagsSource !== 'kernel32') {
+      warnings.push('AVX2 without FMA is unusual; some BLAS paths will be slower than the flags suggest.');
+    }
   }
   if (memMb && memMb < 2048) {
     warnings.push(`Only ${memMb} MB of RAM: no ≤2B model fits here with room to run. Use a 0.6B model, or another machine.`);
@@ -138,9 +170,11 @@ export function recommend({ arch, flags = [], logical = 1, physical = 1, memMb =
   const threads = physical >= 2 ? physical : Math.max(1, logical);
   const build = arch === 'arm64'
     ? { cmake: '-DGGML_NATIVE=ON', note: 'native build; ARM needs no special flags' }
-    : vec.avx2
-      ? { cmake: '-DGGML_NATIVE=ON', note: 'native build; prebuilt binaries would also work here' }
-      : { cmake: '-DGGML_NATIVE=ON', note: 'must be built here: prebuilt binaries assume AVX2' };
+    : !vec.detected
+      ? { cmake: '-DGGML_NATIVE=ON', note: 'build here if you cannot confirm AVX2: prebuilt binaries assume it' }
+      : vec.avx2
+        ? { cmake: '-DGGML_NATIVE=ON', note: 'native build; prebuilt binaries would also work here' }
+        : { cmake: '-DGGML_NATIVE=ON', note: 'must be built here: prebuilt binaries assume AVX2' };
 
   const llamaArgs = [
     `-m ${pick.name}-${pick.quant}.gguf`,
@@ -152,7 +186,10 @@ export function recommend({ arch, flags = [], logical = 1, physical = 1, memMb =
     '--port 8080',
   ];
 
-  return { cpu: { modelName: cpuModel, cores, logical, arch }, vec, memMb, swapMb, threads, build, model: pick, llamaArgs, warnings };
+  return {
+    cpu: { modelName: cpuModel, cores, logical, arch, flagsSource: flagsSource || (flagsKnown ? 'provided' : '') },
+    vec, memMb, swapMb, threads, build, model: pick, llamaArgs, warnings,
+  };
 }
 
 // --- reading the live machine ------------------------------------------------
@@ -165,19 +202,47 @@ function readIfExists(path) {
   }
 }
 
+// "sse4_2 avx avx2" / "sse4_2,avx,avx2" / mixed case -> ['sse4_2','avx','avx2'].
+// Also accepts the aliases a Windows caller is likely to produce (sse4.2,
+// avx512f, asimd) so the same vocabulary reaches recommend().
+export function parseFlagString(text) {
+  const ALIASES = { 'sse4.2': 'sse4_2', 'sse4.1': 'sse4_1', sse42: 'sse4_2', asimd: 'asimd' };
+  return String(text || '')
+    .toLowerCase()
+    .split(/[\s,;]+/)
+    .map((f) => f.trim())
+    .filter(Boolean)
+    .map((f) => ALIASES[f] ?? f);
+}
+
 export function inspect(env = {}) {
   const cpuText = env.cpuInfo ?? readIfExists('/proc/cpuinfo');
   const memText = env.memInfo ?? readIfExists('/proc/meminfo');
   const cpu = parseCpuInfo(cpuText);
+
+  // Second source: whoever launched us. On Windows that is install.ps1, which
+  // measures with kernel32; anywhere else it is a manual override for a container
+  // that hides /proc. /proc wins when it has an answer.
+  const externalRaw = env.cpuFlags ?? process.env.SECRETARY_CPU_FLAGS ?? '';
+  const external = parseFlagString(externalRaw);
+  const flags = cpu.flags.length ? cpu.flags : external;
+  const flagsSource = cpu.flags.length
+    ? 'proc'
+    : external.length
+      ? (env.cpuFlagsSource ?? process.env.SECRETARY_CPU_FLAGS_SOURCE) || 'env'
+      : '';
+
   const mem = memText ? parseMemInfo(memText) : { totalMb: Math.round(os.totalmem() / 1048576), availableMb: Math.round(os.freemem() / 1048576), swapMb: 0 };
 
-  // /proc is the truth where it exists; os.cpus() is the fallback (macOS, and
-  // containers that hide /proc).
+  // /proc is the truth where it exists; os.cpus() is the fallback (macOS, Windows,
+  // and containers that hide /proc) — it counts cores, but carries no flags.
   const cores = cpu.logical || os.cpus().length || 1;
   return {
     ...recommend({
       arch: process.arch,
-      flags: cpu.flags,
+      flags,
+      flagsKnown: flags.length > 0,
+      flagsSource,
       logical: cores,
       physical: cpu.physical || cores,
       memMb: mem.totalMb,
@@ -258,11 +323,18 @@ const pad = (s, n) => String(s).padEnd(n);
 
 export function formatReport(r) {
   const lines = [];
-  const vecNames = Object.entries(r.vec).filter(([, on]) => on).map(([k]) => k.toUpperCase());
+  const vecNames = Object.entries(r.vec)
+    .filter(([k, on]) => on && k !== 'detected')
+    .map(([k]) => k.toUpperCase());
   lines.push('machine');
   lines.push(`  cpu        ${r.cpu.modelName || 'unknown'}`);
   lines.push(`             ${r.cpu.cores} physical core(s), ${r.cpu.logical} threads, ${r.cpu.arch}, ${r.kernel}`);
-  lines.push(`  simd       ${vecNames.length ? vecNames.join(' ') : 'none detected'}`);
+  if (!r.vec.detected) {
+    lines.push('  simd       not measured (no /proc/cpuinfo and no SECRETARY_CPU_FLAGS)');
+  } else {
+    const src = r.cpu.flagsSource && !['proc', 'provided'].includes(r.cpu.flagsSource) ? ` (from ${r.cpu.flagsSource})` : '';
+    lines.push(`  simd       ${vecNames.length ? vecNames.join(' ') : 'none detected'}${src}`);
+  }
   lines.push(`  memory     ${r.memMb} MB total, ${r.availableMb} MB available, ${r.swapMb ? `${r.swapMb} MB swap` : 'no swap'}`);
   lines.push('');
   lines.push('what to run');

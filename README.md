@@ -8,6 +8,7 @@
 - [Features](#features)
 - [Install](#install)
 - [The `tg-secretary` command](#the-tg-secretary-command)
+- [Windows](#windows)
 - [Quick start](#quick-start)
 - [The model, and the machine it runs on](#the-model-and-the-machine-it-runs-on)
 - [The control panel](#the-control-panel)
@@ -157,6 +158,7 @@ bash uninstall.sh --dir /path [--purge]
 It does **not** download a model: the right GGUF depends on the CPU in the box and is a
 ~1 GB download, so it prints `npm run hw` and the exact `llama-server` line instead. All
 the flags, the upgrade path and what it leaves behind: **[docs/install.md](docs/install.md)**.
+On Windows use **[`install.ps1`](#windows)** instead — same steps, Scheduled Task instead of systemd.
 
 ## The `tg-secretary` command
 
@@ -172,6 +174,30 @@ tg-secretary restart
 
 It follows its own symlink to find the install, so it works from any directory and keeps
 working after an update. Full command list: [docs/install.md](docs/install.md).
+
+## Windows
+
+The bot runs on Windows natively — no WSL, no Docker:
+
+```powershell
+git clone https://github.com/ygasaino1/tg-ai-secretary.git
+cd tg-ai-secretary
+.\install.ps1
+```
+
+`install.ps1` is the same install in Windows spelling: it checks Node, copies the code,
+locks the token file down with an ACL, registers a **Scheduled Task** with restart-on-exit
+(which is what lets `/update` hand over to new code), starts it and waits for the panel to
+answer. `-WhatIf` prints every step and changes nothing.
+
+Two things differ from Linux, both explained in **[docs/windows.md](docs/windows.md)**:
+
+- **The CPU is measured with `IsProcessorFeaturePresent`**, because Windows has no
+  `/proc/cpuinfo` and Node reports no flags. The result is passed to the bot as
+  `SECRETARY_CPU_FLAGS`, so `tg-secretary hw` gives the same answer the installer did.
+  Without it the report says *not measured* rather than claiming your CPU has no AVX2.
+- **`tg-secretary` is a `.cmd` shim on your user `PATH`**, not a symlink (symlinks need
+  elevation and do not survive copying).
 
 ## Quick start
 
@@ -336,10 +362,12 @@ tg-ai-secretary/
 │     ├─ update-bridge.js        lets the handlers reach the local updater
 │     └─ config.js, pending.js, secretary.js, owner.js, activity.js, text.js
 ├─ bin/tg-secretary            the command: status, panel, start/stop, logs, update
-├─ install.sh                  the installer: checks, copies, writes settings, service
-├─ uninstall.sh                stop the service; --purge also deletes your data
-├─ tests/                      20 files, run against a fake sdk
-└─ docs/                       install.md · local.md · prompts.md · panel-audit.md · plan-local-ps4.md
+├─ bin/tg-secretary.{ps1,cmd}  the same command on Windows
+├─ install.sh / uninstall.sh   the Linux installer: checks, copies, settings, systemd
+├─ install.ps1 / uninstall.ps1 the Windows installer: Scheduled Task, ACL, PATH
+├─ bot/cli.mjs                 version + update, shared by both front ends
+├─ tests/                      21 files, run against a fake sdk
+└─ docs/                       install.md · windows.md · local.md · prompts.md · panel-audit.md · plan-local-ps4.md
 ```
 
 **One process, one data file.** The bot and the panel are the same Node process; state is one JSON file written atomically, with 14 rolling backups and a lock that refuses a second instance. No database to install, no native module to compile — which is the whole reason it runs on a console.
@@ -349,14 +377,14 @@ tg-ai-secretary/
 ## Tests
 
 ```bash
-npm test            # 151 unit tests
-npm run selftest    # 37 end-to-end checks (fake Telegram + fake model)
+npm test            # 170 unit tests
+npm run selftest    # 38 end-to-end checks (fake Telegram + fake model)
 npm run hw          # machine report
 ```
 
 What the numbers cover:
 
-- **unit** — text handling, prompts, reply delay, typing indicator, language detection, the guard, the local query builder, panel settings validation, the v1.2 features (contacts, quiet hours, probe, metrics), machine detection, group addressing, inline payloads, the learning filter, the updater's policy (modes, refusal conditions, parsing a behind/ahead count) and its real-git paths against two temporary repositories — fast-forward, rollback, a dirty tree, a diverged branch — static checks on the panel's own front end (every wired id must exist, every tab must render, the session must survive a cookie-less proxy), 12 tests that drive the `tg-secretary` command (install resolution, the panel URL, honest status output, the link on `PATH`, and the refusal of a directory that is not an install), and 15 tests that run the installer for real — a dry run that changes nothing, a refused foreign directory, a real install whose panel answers, an upgrade that keeps settings and messages, and a purge that removes them.
+- **unit** — text handling, prompts, reply delay, typing indicator, language detection, the guard, the local query builder, panel settings validation, the v1.2 features (contacts, quiet hours, probe, metrics), machine detection, group addressing, inline payloads, the learning filter, the Windows scripts (structure, PowerShell 5.1 syntax limits, cmdlet existence, and command parity with the Linux front end), the CPU-flag honesty rules (measured vs not measured), the ProgramData settings file with its BOM, the updater's policy (modes, refusal conditions, parsing a behind/ahead count) and its real-git paths against two temporary repositories — fast-forward, rollback, a dirty tree, a diverged branch — static checks on the panel's own front end (every wired id must exist, every tab must render, the session must survive a cookie-less proxy), 12 tests that drive the `tg-secretary` command (install resolution, the panel URL, honest status output, the link on `PATH`, and the refusal of a directory that is not an install), and 15 tests that run the installer for real — a dry run that changes nothing, a refused foreign directory, a real install whose panel answers, an upgrade that keeps settings and messages, and a purge that removes them.
 - **selftest** — drives real messages through the real handlers: a draft is created and approved, the guard replaces a promise, an urgent message never reaches the model, a blocked contact costs no model call, quiet hours turn an auto reply into a draft, the probe gate locks and unlocks auto, group messages are answered only when addressed, inline burst-debouncing, the learning pass refusing an instruction and a verification code, and `/update` telling the truth about status while refusing to touch a dirty checkout.
 
 ## Known limits
@@ -371,12 +399,40 @@ What the numbers cover:
 - **Text only** — photos, voice and stickers are announced to you, not answered. Replies are plain text.
 - **The panel is plain HTTP with one shared token**, no user accounts. Fine on a home LAN; use `PANEL_HOST=127.0.0.1` behind an SSH tunnel if the network isn't yours.
 - **One bot per state directory** — a lock file refuses a second copy.
-- **The installer is bash and Linux-shaped.** No systemd → it starts the bot once to prove it works and then tells you how to run it yourself; there is no launchd or Windows service.
+- **Windows support is newer than the Linux path.** The JavaScript half is tested; the PowerShell half is syntax- and structure-checked here, because a PowerShell runtime is not part of the Linux dev box. The first real Windows run is yours ([docs/windows.md](docs/windows.md)).
+- **No macOS installer.** The bot itself runs, but neither installer targets launchd; use `npm start` there.
+- **Linux without systemd** → `install.sh` starts the bot once to prove it works, then tells you how to run it yourself.
 - **It does not install a model or build llama.cpp.** Those depend on the machine, and guessing wrong is slower than doing nothing ([docs/install.md](docs/install.md)).
 - **Auto-install is a remote-code-execution switch.** `update_mode: apply` runs whatever is pushed to your branch, unattended, every six hours. Keep it `notify` unless the remote is one only you can push to. Rollback covers the last install, not every install.
 - **Serverless quirk:** the Ollama key lives in the database there, because that runtime documents no secrets store. The local runtime reads it from `bot/.env` or the panel.
 
 ## Changelog
+
+### v1.6 — Windows
+
+**New**
+- **`install.ps1` / `uninstall.ps1`**: the same install as Linux — Node check, code, an
+  ACL-protected settings file, a Scheduled Task with restart-on-exit, a health check, and
+  `-WhatIf`.
+- **`tg-secretary.ps1` / `.cmd`**: `status`, `panel`, `start`, `stop`, `logs`, `update` and
+  the rest, on Windows, sharing one implementation with Linux through `bot/cli.mjs`.
+- **CPU measurement on Windows** via `IsProcessorFeaturePresent`, passed on as
+  `SECRETARY_CPU_FLAGS` — the model recommendation is now measured there too.
+- **`bot/env.mjs` reads `%ProgramData%\tg-ai-secretary\bot.env`**, the Windows counterpart
+  of `/etc/secretary-bot.env`, and strips a UTF-8 BOM.
+
+**Fixed**
+- On any machine without `/proc/cpuinfo` (Windows, macOS, some containers) the report
+  said **"No AVX2 on this CPU"** — a confident claim about a CPU it had never measured.
+  It now says "could not be measured" and names the way to find out.
+- `install.sh` now recognises a Windows shell and points at `install.ps1` instead of
+  running a Linux service install that cannot work there.
+- The `tg-secretary` front end parses its own flags. PowerShell's parameter binding ran
+  before the first line of the script and rejected `logs -n 50` and `uninstall -Purge`
+  with *A parameter cannot be found*; the flags documented in the help now work.
+- A value assigned inside an `Invoke-Step` scriptblock was invisible outside it, so a
+  successful install could still behave as if the Scheduled Task had not been registered.
+  It is `$script:`-scoped now, and a test fails if that pattern comes back.
 
 ### v1.5 — a command
 
