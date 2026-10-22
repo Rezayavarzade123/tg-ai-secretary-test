@@ -52,7 +52,7 @@ Nothing here is an LLM judging an LLM. Every check is code you can read in an af
 
 Same handlers, same schema, same prompts. The local runtime adds a **control panel** in the browser; Telegram gets `/lang`, `/mode` and inline-button approvals.
 
-> **Status: v1.7 — experimental.** 221 unit tests and 50 end-to-end checks pass, the panel has been audited ([21 findings, all fixed](docs/panel-audit.md)), and every path has been exercised against a fake Telegram and a fake model. It has **not** yet been run against a live Telegram account or a real 1.7B model in this repository. Connect your own bot first, in draft mode, and watch the first ten replies before you trust it.
+> **Status: v1.7 — experimental.** 225 unit tests and 50 end-to-end checks pass, the panel has been audited ([21 findings, all fixed](docs/panel-audit.md)), and every path has been exercised against a fake Telegram and a fake model. It has **not** yet been run against a live Telegram account or a real 1.7B model in this repository. Connect your own bot first, in draft mode, and watch the first ten replies before you trust it.
 
 ## What it does
 
@@ -434,7 +434,7 @@ tg-ai-secretary/
 ## Tests
 
 ```bash
-npm test            # 221 unit tests
+npm test            # 225 unit tests
 npm run selftest    # 50 end-to-end checks (fake Telegram + fake model)
 npm run hw          # machine report
 ```
@@ -502,9 +502,22 @@ is now `/reset <chat_id>`, and the failure notice you receive names it. That mat
 that the history cleans itself, but a person should not need to know the internals to unstick
 one conversation.
 
-**Also fixed:** the fact learner wrote down *"Shadi Sadeghi Razlighi's city is not mentioned"* —
-a fact about what the model could not find, not about the person, taking one of twelve slots.
-Absence statements are rejected now ("not mentioned", "unknown", "نامشخص", "ذکر نشده").
+**Also fixed: what it "learns".** The same log showed two facts for a stranger:
+*"Shadi Sadeghi Razlighi is a technician"* and *"…'s city is not mentioned"*. Both are junk, and
+both were then injected into the prompt for that person.
+
+- **Absence statements are refused.** A fact about what the model could not find is not a fact
+  about the person: "not mentioned", "unknown", `نامشخص`, `ذکر نشده`.
+- **A fact has to be supported by the conversation it came from.** A 1.7B model asked *"what did
+  they tell you"* will invent a job or a city, and an invented fact gets repeated back to a
+  stranger as if they had said it. A fact is kept only if most of its content words appear in
+  the transcript. Paraphrase survives a light four-letter stem (`works`/`work`,
+  `nights`/`night`); invention does not, because none of its words were ever said. Works on
+  Persian too, where there are no spaces to split on.
+- **The extraction prompt forbids guessing**: no job, city, age or family unless stated, no
+  "unknown"/"not mentioned", no greetings, no narration of the conversation.
+- **Facts already stored under the old rules are filtered on the way out**, so an install that
+  already learned junk stops feeding it to the model without anyone clearing anything by hand.
 
 
 ### v1.7.5 — any language, not only the ones with a table

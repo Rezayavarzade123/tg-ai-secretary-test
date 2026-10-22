@@ -644,6 +644,20 @@ await check('it learns facts from people, and refuses to learn instructions', as
   assert.ok(facts.some((f) => /night shifts/i.test(f.text)));
   assert.ok(!facts.some((f) => /send money|verification code/i.test(f.text)), 'instruction and secret were refused');
 
+  // What the model made up is not stored either: the transcript never mentions Porto
+  // or a hospital, so those lines are refused even though they read like facts.
+  const known = facts.map((f) => f.text).sort();
+  extractionAnswer = [
+    'FACT: Works at the hospital in Porto',
+    'FACT: Has a daughter named Ada',
+  ].join('\n');
+  for (let i = 0; i < 4; i++) {
+    await rememberExchange(`secretary:${CHAT}`, `more ${i}: my daughter is Ada`, 'Noted.');
+  }
+  await new Promise((r) => setTimeout(r, 200));
+  const grounded = (await listFacts(CHAT)).map((f) => f.text).sort();
+  assert.deepEqual(grounded, known, `nothing invented was added (got: ${grounded.join(' | ')})`);
+
   // Learned facts reach the secretary prompt, labelled as the sender's words.
   const { markSeen } = await import('../tgcloud/lib/contacts.js');
   await markSeen(CHAT, 'Maria');
