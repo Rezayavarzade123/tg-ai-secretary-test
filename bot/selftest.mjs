@@ -628,6 +628,40 @@ await check('a Telegram failure from the panel is a 502, not a 400', async () =>
   await new Promise((resolve) => server.close(resolve));
 });
 
+await check('a login survives a proxy that eats the request body', async () => {
+  // Seen in the wild: the panel log said "wrong token" while the person was typing
+  // the right one, because the body never arrived. The token is also accepted as a
+  // bearer header, so one of the two copies gets through.
+  const { startPanel } = await import('./panel/server.mjs');
+  const server = await startPanel({ port: 0, host: '127.0.0.1', lanAddress: '127.0.0.1' });
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const post = (headers, body) => realFetch(`${base}/api/login`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...headers },
+    body,
+  });
+
+  const headerOnly = await post({ Authorization: 'Bearer selftest-token' }, '');
+  assert.equal(headerOnly.status, 200, 'the header alone is enough');
+
+  const mangledBody = await post({ Authorization: 'Bearer selftest-token' }, JSON.stringify({ token: 'garbled' }));
+  assert.equal(mangledBody.status, 200, 'a rewritten body cannot veto a correct header');
+
+  const nothing = await post({}, '');
+  assert.equal(nothing.status, 401);
+  assert.match((await nothing.json()).error, /no token arrived/, 'the error says the request was empty, not "wrong token"');
+
+  const notAscii = await post({}, JSON.stringify({ token: 'یثمه' }));
+  assert.equal(notAscii.status, 401);
+  assert.match((await notAscii.json()).error, /keyboard layout/, 'and names a non-ASCII token for what it is');
+
+  const capital = await post({}, JSON.stringify({ token: 'SELFTEST-TOKEN' }));
+  assert.equal(capital.status, 401);
+  assert.match((await capital.json()).error, /capitalisation/);
+
+  await new Promise((resolve) => server.close(resolve));
+});
+
 await check('the login works behind a proxy that rewrites Host', async () => {
   // A hosted preview URL is exactly this: the browser's Origin is the public host,
   // the upstream sees its own Host header. The old check refused the login POST

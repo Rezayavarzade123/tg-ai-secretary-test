@@ -218,6 +218,20 @@ function readBody(req, limit = 256 * 1024) {
 //      "same-origin" means the document and this request share an origin, which
 //      is exactly what we want to know — regardless of what the proxy did to Host.
 //   2. Proxies that do forward the original host put it in X-Forwarded-Host.
+// Why a sign-in failed, in words, without writing the secret to the log. "Wrong
+// token" with no detail sent us looking at cookies and proxies for two rounds when
+// the request body had simply not arrived; the three facts below would have said so.
+function describeBadToken(given, inBody, inHeader) {
+  if (!given) return inBody === '' && !inHeader ? ' (no token arrived in the request at all)' : ' (empty token)';
+  const bits = [`${given.length} characters`];
+  const ascii = /^[\x20-\x7e]+$/.test(given);
+  if (!ascii) bits.push('not plain ASCII — check the keyboard layout');
+  else if (ACCESS_TOKEN && given.toLowerCase() === ACCESS_TOKEN.toLowerCase()) bits.push('differs only in capitalisation');
+  else if (given.trim() !== given) bits.push('has surrounding spaces');
+  if (!inBody && inHeader) bits.push('body was empty, header was used');
+  return ` (${bits.join('; ')})`;
+}
+
 const SESSION_ROUTES = new Set(['POST /api/login', 'POST /api/logout']);
 
 function checkOrigin(req) {
@@ -585,7 +599,16 @@ async function handleApi(req, res, url) {
     if (blockedFor > 0) {
       return json(res, 429, { error: `Too many wrong tokens. Try again in ${Math.ceil(blockedFor / 1000)} s.` });
     }
-    if (!ACCESS_TOKEN || sameSecret(body.token ?? '', ACCESS_TOKEN)) {
+    // The token may arrive in the body or as a bearer header. The page sends both:
+    // a proxy can drop a request body, and "the right token is rejected" is an
+    // impossible-looking bug to chase from the outside.
+    const inBody = typeof body?.token === 'string' ? body.token : '';
+    const inHeader = String(req.headers.authorization || '').replace(/^Bearer\s+/i, '').trim();
+    // Either one may be the intact copy; a proxy that rewrites the body should not
+    // be able to veto a correct header, and vice versa.
+    const given = inBody || inHeader;
+
+    if (!ACCESS_TOKEN || sameSecret(inBody, ACCESS_TOKEN) || sameSecret(inHeader, ACCESS_TOKEN)) {
       loginFails.delete(ip);
       res.setHeader('Set-Cookie', `panel_token=${encodeURIComponent(ACCESS_TOKEN)}; Path=/; HttpOnly; SameSite=Strict; Max-Age=31536000`);
       // Also hand the token back so the page can keep it and send it as a bearer
@@ -596,8 +619,11 @@ async function handleApi(req, res, url) {
       return json(res, 200, ACCESS_TOKEN ? { ok: true, token: ACCESS_TOKEN } : { ok: true });
     }
     noteLoginFailure(ip);
-    log('warn', `panel: wrong token from ${ip}`);
-    return json(res, 401, { error: 'Wrong token. It is printed when the bot starts, and stored in the panel token file.' });
+    const why = describeBadToken(given, inBody, inHeader);
+    log('warn', `panel: wrong token from ${ip} —${why}`);
+    return json(res, 401, {
+      error: `Wrong token${why}. It is printed when the bot starts, and stored in the panel token file.`,
+    });
   }
 
   if (route === 'POST /api/logout') {

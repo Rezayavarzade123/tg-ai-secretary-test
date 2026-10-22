@@ -1026,7 +1026,13 @@ async function saveSettings(patch, okMessage, extra = {}) {
 $('#loginBtn').onclick = async () => {
   const token = $('#tokenInput').value.trim();
   try {
-    const body = await api('/api/login', { method: 'POST', body: JSON.stringify({ token }) });
+    // Send it twice on purpose: in the body, and as a header. If a proxy drops the
+    // body, the header still signs us in — otherwise a correct token looks wrong.
+    const body = await api('/api/login', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ token }),
+    });
     saveToken(body.token || token);
     $('#loginErr').textContent = '';
     $('#tokenInput').value = '';
