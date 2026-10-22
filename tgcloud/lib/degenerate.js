@@ -108,6 +108,9 @@ export function analyseAnswer({ answer, userText = '', recentAnswers = [] } = {}
   return { ok: reasons.length === 0, reasons };
 }
 
+import { isLanguageInput, resolveLanguage } from './lang.js';
+
+
 // Said instead of a reply that repeated itself. Honest about what happened, short,
 // and in the language of the conversation. Deliberately not stored in history: it
 // is the app talking, not the conversation.
@@ -125,8 +128,12 @@ const FALLBACK = {
   sv: 'Mitt svar blev fel — jag upprepade dig i stället för att svara. Fråga igen, med några ord till?',
 };
 
+// The apology follows the reply language: a code, a name an older build stored
+// ("Swedish"), or a language with no sentence of its own - which gets English,
+// because an unchecked translation is worse than a sentence that is understood.
 export function degenerateReply(lang = 'en') {
-  return FALLBACK[String(lang || 'en').toLowerCase()] ?? FALLBACK.en;
+  const code = isLanguageInput(lang) ? resolveLanguage(lang).code : 'en';
+  return FALLBACK[code] ?? FALLBACK.en;
 }
 
 // The nudge for the second attempt. It goes in as a system message, after the

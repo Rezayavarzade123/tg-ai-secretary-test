@@ -779,6 +779,18 @@ await check('reply timing is recorded and reported', async () => {
   assert.match(reply.text, /Auto mode gate: (open|locked)/);
 });
 
+await check('/status survives a corrupted settings value', async () => {
+  // A hand-edited state file used to make JSON.parse throw inside /status, so the
+  // command answered with an error instead of a status.
+  await setSetting('secretary_conns', 'not json at all');
+  const before = sent.length;
+  await botMessage({ message_id: 31, chat: { id: OWNER, type: 'private' }, from: { id: OWNER, first_name: 'Sam' }, text: '/status' });
+  const reply = sent.slice(before).at(-1).text;
+  assert.match(reply, /Auto mode gate/, 'the status still arrived');
+  assert.ok(!/Invalid|Unexpected|JSON/.test(reply), `no parse error leaked: ${reply.slice(0, 120)}`);
+  await setSetting('secretary_conns', JSON.stringify(['conn-1']));
+});
+
 await check('/drafts re-sends the pending cards', async () => {
   const { countPendingDrafts } = await import('../tgcloud/lib/drafts.js');
   const pending = await countPendingDrafts();
@@ -810,6 +822,13 @@ await check('/hours and /contact are validated, not just stored', async () => {
   assert.match(sent.slice(before3).at(-1).text, /answered in Klingon \(klingon\)/);
   await botMessage({ message_id: 29, chat: { id: OWNER, type: 'private' }, from: { id: OWNER, first_name: 'Sam' }, text: '/contact 6006 lang Swedish' });
   assert.match(sent.slice(before3).at(-1).text, /answered in Swedish \(sv\)/);
+
+  // A language whose name has a space: matching only the first word stored "Bahasa".
+  const { getContact } = await import('../tgcloud/lib/contacts.js');
+  await botMessage({ message_id: 32, chat: { id: OWNER, type: 'private' }, from: { id: OWNER, first_name: 'Sam' }, text: '/contact 6006 lang Bahasa Indonesia' });
+  assert.equal((await getContact(6006))?.lang, 'id');
+  await botMessage({ message_id: 33, chat: { id: OWNER, type: 'private' }, from: { id: OWNER, first_name: 'Sam' }, text: '/contact 6006 lang auto' });
+  assert.equal((await getContact(6006))?.lang, '', 'auto clears the override');
 
   // Junk is still refused rather than stored as a "language".
   const before4 = sent.length;

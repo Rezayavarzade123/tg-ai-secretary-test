@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 
 const { normalise, tokens, analyseAnswer, degenerateReply, correctionNote } = await import('../tgcloud/lib/degenerate.js');
 const { matchSmalltalk } = await import('../tgcloud/lib/smalltalk.js');
+const { guardTexts, hasSafetyTexts } = await import('../tgcloud/lib/guard.js');
 
 // ---------------------------------------------------------------- normalising
 test('Persian spellings collapse to one form before anything is compared', () => {
@@ -117,6 +118,17 @@ test('a real request behind a greeting goes to the model', () => {
   // ...while the ordinary ways of saying hello still count.
   assert.equal(matchSmalltalk('hi there', { ownerName: 'Sam' }).id, 'greeting');
   assert.equal(matchSmalltalk('hello again!', { ownerName: 'Sam' }).id, 'greeting');
+});
+
+test('the guard and the apology follow a language stored as a name', () => {
+  // An older build stored the typed value, so these arrive as "Swedish" rather than
+  // "sv". English there would have been a silent downgrade.
+  assert.match(guardTexts('Swedish').disclose('Sam'), /automatiska assistent/);
+  assert.match(degenerateReply('Swedish'), /Mitt svar blev fel/);
+  assert.equal(hasSafetyTexts('Swedish'), true);
+  // A language with no table falls back to English, and says so.
+  assert.equal(hasSafetyTexts('tlh'), false);
+  assert.match(guardTexts('tlh').disclose('Sam'), /automated assistant/);
 });
 
 test('a language this file cannot write is left to the model, on purpose', () => {

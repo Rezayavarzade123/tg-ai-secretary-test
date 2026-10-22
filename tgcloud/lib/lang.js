@@ -86,7 +86,12 @@ const RTL_SCRIPT = /[\u0590-\u05ff\u0600-\u06ff\u0750-\u077f\ufb50-\ufdff\ufe70-
 export function isLanguageInput(value) {
   const raw = String(value ?? '').trim();
   if (!raw || raw.length > 40) return false;
+  // Letters and digits, spaces, underscores and hyphens - enough for "pt-BR",
+  // "Bahasa Indonesia" and "فارسی", and nothing that could be a path or a sentence.
   if (!/^[\p{L}\p{N}][\p{L}\p{N} _-]*$/u.test(raw)) return false;
+  // At least one letter and at least two characters: a bare "42" or "a" is a typo,
+  // not a language, and it used to be stored as one.
+  if (!/\p{L}{2}/u.test(raw)) return false;
   return true;
 }
 
@@ -288,14 +293,17 @@ export function resolveLang(preferred, text) {
     // A Latin-script setting (or one this build does not know) keeps the setting;
     // a non-Latin setting cannot answer a Latin message, so English is the honest
     // guess - that was the v1.7.4 fix for "Persian default, English sender".
-    const p = String(preferred || '').trim().toLowerCase();
-    if (p && LATIN_LANGS.has(p.split(/[-_]/)[0])) return p.split(/[-_]/)[0];
-    if (p && !isLanguage(p) && isLanguageInput(preferred)) return p.split(/[-_]/)[0];
+    // A setting written by an older build may be a name ("Swedish") rather than a
+    // code, so resolve it the same way the setting field does.
+    const p = isLanguageInput(preferred) ? resolveLanguage(preferred).code : '';
+    if (p && LATIN_LANGS.has(p)) return p;
+    if (p && !isLanguage(p)) return p;
     return 'en';
   }
-  // A known language from the setting; anything else is a typo as far as the
-  // app's own sentences go, and English is the safe fallback. (The setting itself
-  // is passed to the model as written - see resolveLanguage.)
-  const p = String(preferred || 'en').toLowerCase();
+  // A known language from the setting - a code, or a name an older build stored.
+  // Anything else is a typo as far as the app's own sentences go, and English is
+  // the safe fallback. (The setting itself still reaches the model as written:
+  // see resolveLanguage and languagePromptName.)
+  const p = isLanguageInput(preferred) ? resolveLanguage(preferred).code : '';
   return isLanguage(p) ? p : 'en';
 }

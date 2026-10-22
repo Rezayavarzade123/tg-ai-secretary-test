@@ -397,9 +397,11 @@ async function runCommand(chatId, message, { cmd, arg }) {
         await say(chatId, `Saved for chat ${id}. I will use this when replying to them — it is the only thing I know about them.`);
         return;
       }
-      const lm = /^lang\s+(\S+)$/i.exec(rest);
+      // The rest of the line, not one word: "Bahasa Indonesia" and "Tiếng Việt" are
+      // languages, and matching only the first word silently stored "Bahasa".
+      const lm = /^lang\s+(.+)$/i.exec(rest);
       if (lm) {
-        const v = lm[1].toLowerCase();
+        const v = lm[1].trim().toLowerCase();
         if (v === 'auto' || v === 'reset') {
           await updateContact(id, { lang: '' });
           await say(chatId, `Chat ${id} now follows the usual language rules.`);
@@ -408,7 +410,7 @@ async function runCommand(chatId, message, { cmd, arg }) {
         // Any language, same rule as /lang: a code, a name, or something the
         // registry has never heard of - the prompt carries it either way.
         if (!isLanguageInput(lm[1])) { await say(chatId, 'Usage: /contact <chat_id> lang <code|name|auto>'); return; }
-        const chosen = resolveLanguage(lm[1]);
+        const chosen = resolveLanguage(lm[1].trim());
         await updateContact(id, { lang: chosen.code });
         await say(chatId, `Chat ${id} will always be answered in ${chosen.label} (${chosen.code}).`);
         return;
@@ -568,11 +570,12 @@ async function runCommand(chatId, message, { cmd, arg }) {
 
     case 'lang': {
       const cur = await getSetting('lang', DEFAULT_LANG);
+      const curEntry = resolveLanguage(cur);
       const auto = (await getSetting('lang_auto', 'on')) !== 'off';
       const list = LANGUAGES.map((l) => `${l.code} — ${l.native}`).join('\n');
       if (!arg) {
         await say(chatId,
-          `Reply language: ${languagePromptName(cur)} (${cur})\n` +
+          `Reply language: ${curEntry.prompt} (${curEntry.code})\n` +
           `Follow the person's language: ${auto ? 'ON' : 'OFF'}\n\n` +
           `Commands:\n/lang <language>  always use this language\n/lang auto on|off  follow whoever writes\n\n` +
           `Any language works — a code, a name, or a tag like pt-BR:\n/lang Swedish   /lang tlh   /lang 日本語\n\n` +
@@ -848,7 +851,7 @@ async function runCommand(chatId, message, { cmd, arg }) {
       const baseUrl = await getSetting('llm_base_url', LOCAL_LLM_URL);
       const cloudKey = (await getSetting('llm_api_key')) ?? (await getSetting('ollama_key'));
       const key = provider === 'cloud' ? (cloudKey ? 'saved' : 'MISSING (use /setkey)') : 'not needed (local)';
-      const conns = JSON.parse(await getSetting('secretary_conns', '[]')).length;
+      const conns = await connectionCount();
       const mode = await getSetting('secretary_mode', DEFAULT_SECRETARY_MODE);
       const lang = await getSetting('lang', DEFAULT_LANG);
       const auto = (await getSetting('lang_auto', 'on')) !== 'off';
@@ -896,5 +899,15 @@ async function runCommand(chatId, message, { cmd, arg }) {
 
     default:
       await say(chatId, `Unknown command /${cmd}.\n\n` + HELP);
+  }
+}
+
+// A corrupted or hand-edited settings value must not take /status down with it.
+async function connectionCount() {
+  try {
+    const ids = JSON.parse(await getSetting('secretary_conns', '[]'));
+    return Array.isArray(ids) ? ids.length : 0;
+  } catch {
+    return 0;
   }
 }

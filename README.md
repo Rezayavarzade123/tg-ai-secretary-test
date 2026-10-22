@@ -52,7 +52,7 @@ Nothing here is an LLM judging an LLM. Every check is code you can read in an af
 
 Same handlers, same schema, same prompts. The local runtime adds a **control panel** in the browser; Telegram gets `/lang`, `/mode` and inline-button approvals.
 
-> **Status: v1.7 — experimental.** 212 unit tests and 47 end-to-end checks pass, the panel has been audited ([21 findings, all fixed](docs/panel-audit.md)), and every path has been exercised against a fake Telegram and a fake model. It has **not** yet been run against a live Telegram account or a real 1.7B model in this repository. Connect your own bot first, in draft mode, and watch the first ten replies before you trust it.
+> **Status: v1.7 — experimental.** 214 unit tests and 48 end-to-end checks pass, the panel has been audited ([21 findings, all fixed](docs/panel-audit.md)), and every path has been exercised against a fake Telegram and a fake model. It has **not** yet been run against a live Telegram account or a real 1.7B model in this repository. Connect your own bot first, in draft mode, and watch the first ten replies before you trust it.
 
 ## What it does
 
@@ -434,8 +434,8 @@ tg-ai-secretary/
 ## Tests
 
 ```bash
-npm test            # 212 unit tests
-npm run selftest    # 47 end-to-end checks (fake Telegram + fake model)
+npm test            # 214 unit tests
+npm run selftest    # 48 end-to-end checks (fake Telegram + fake model)
 npm run hw          # machine report
 ```
 
@@ -501,6 +501,19 @@ sentences in, and deciding which languages you were allowed to choose. Only the 
   mode. A reply with no language evidence at all is now unscorable for a Latin-script setting
   (it still counts as English against a Persian or Russian one, which is the drift that check
   exists to catch).
+
+**Found while testing it, and fixed**
+- **A number passed as a language.** `{ lang: 42 }` from the panel was stored as the reply
+  language, because `"42"` satisfied the old input check. A language must now contain at least
+  two letters, so `42`, `a` and `12` are refused with a reason.
+- **A setting stored as a name silently lost its translations.** An install from 1.7.4 or
+  earlier can hold `Swedish` instead of `sv`; the prompt said "Swedish" (fine) but the guard's
+  fixed sentences and the repetition apology fell back to English. Settings is still read as
+  written, and everything that looks up a table now resolves the name first.
+- **`/contact <id> lang Bahasa Indonesia` stored `Bahasa`.** The command matched one word.
+  It now takes the rest of the line, and `Tiếng Việt` works too.
+- **`/status` died on a corrupted `secretary_conns`** setting (`JSON.parse` with no guard). It
+  now reports 0 connections and carries on.
 
 **Still English for unknown languages, on purpose**
 - The guard's fixed sentences, the repetition apology and the smalltalk replies exist in a

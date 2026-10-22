@@ -114,12 +114,29 @@ test('any language can be chosen, not only the ones in the registry', () => {
 test('input that is not a language is still rejected', () => {
   assert.equal(isLanguageInput('sv'), true);
   assert.equal(isLanguageInput('Swedish'), true);
+  assert.equal(isLanguageInput('Bahasa Indonesia'), true);
+  assert.equal(isLanguageInput('فارسی'), true);
   assert.equal(isLanguageInput(''), false);
   assert.equal(isLanguageInput('   '), false);
   assert.equal(isLanguageInput('x'.repeat(41)), false);
   // Not letters, digits, space, underscore or hyphen.
   assert.equal(isLanguageInput('a b c!'), false);
   assert.equal(isLanguageInput('<script>'), false);
+  // A number or a single letter is a typo, not a language. The panel used to store
+  // { lang: 42 } as the reply language because "42" passed.
+  assert.equal(isLanguageInput('42'), false);
+  assert.equal(isLanguageInput('a'), false);
+  assert.equal(isLanguageInput('12'), false);
+});
+
+test('a setting stored as a name by an older build still resolves to its code', () => {
+  // v1.7.4 and earlier stored whatever was typed, so settings and contacts can hold
+  // "Swedish" rather than "sv". Everything downstream has to cope with that.
+  assert.equal(resolveLang('Swedish', 'Vi ses imorgon klockan tre'), 'sv');
+  assert.equal(resolveLang('Swedish', 'ok'), 'sv');
+  assert.equal(languagePromptName('Swedish'), 'Swedish');
+  // A non-Latin name is still non-Latin: a Latin message gets English.
+  assert.equal(resolveLang('Persian', 'Please call me tomorrow'), 'en');
 });
 
 test('a widened script table still answers the common ones correctly', () => {

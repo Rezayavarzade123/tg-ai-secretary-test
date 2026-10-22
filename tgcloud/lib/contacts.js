@@ -2,6 +2,7 @@ import { db } from 'sdk';
 import { eq, desc } from 'sdk/db';
 import { secretaryChats } from '../schema.js';
 import { logActivity } from './activity.js';
+import { isLanguageInput, resolveLanguage } from './lang.js';
 
 // Per-chat context and controls for Secretary mode.
 //
@@ -25,7 +26,9 @@ function normalize(row) {
   return {
     ...row,
     notes: row.notes ?? '',
-    lang: row.lang ?? '',
+    // A row written by an older build may hold a name ("Swedish") instead of a code.
+    // Resolving on read means the prompt, the guard and the panel all agree on it.
+    lang: row.lang ? (isLanguageInput(row.lang) ? resolveLanguage(row.lang).code : '') : '',
     blocked: Boolean(row.blocked),
     muted: Boolean(row.muted),
     ownerLastAt: row.ownerLastAt ?? 0,

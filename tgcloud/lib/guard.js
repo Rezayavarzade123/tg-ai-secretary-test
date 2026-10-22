@@ -8,6 +8,8 @@
 // The checks are intentionally blunt: they replace a risky sentence with a fixed,
 // safe sentence rather than trying to be clever about what the model meant.
 
+import { isLanguageInput, resolveLanguage } from './lang.js';
+
 // "I am the owner" / "I'm the boss" — a claim of authority that is not a name.
 // Kept narrow on purpose: "I'm an automated assistant" must NOT be caught.
 // No /g flag: the guard tests this regex on every outgoing message, and a global
@@ -122,12 +124,17 @@ const TEXTS = {
 // crash or a blank message. `partial` is false only when every key is translated,
 // so the caller can say so in the log instead of pretending it is localised.
 export function hasSafetyTexts(lang) {
-  const table = TEXTS[String(lang || 'en').toLowerCase()];
+  const code = isLanguageInput(lang) ? resolveLanguage(lang).code : 'en';
+  const table = TEXTS[code];
   return Boolean(table) && ['disclose', 'hold', 'urgent', 'firstContact'].every((k) => typeof table[k] === 'function');
 }
 
+// `lang` may be a code ("sv"), a name an older build stored ("Swedish") or a
+// language with no table at all. The first two find their translations; the third
+// falls back to English rather than to nothing.
 export function guardTexts(lang) {
-  const table = TEXTS[String(lang || 'en').toLowerCase()];
+  const code = isLanguageInput(lang) ? resolveLanguage(lang).code : 'en';
+  const table = TEXTS[code];
   return table ? { ...TEXTS.en, ...table } : TEXTS.en;
 }
 
