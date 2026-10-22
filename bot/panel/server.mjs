@@ -25,7 +25,7 @@ import { listDrafts, getDraft, sendDraft, ignoreDraft, regenerateDraft, updateDr
 import { health, llmQueue } from '../../tgcloud/lib/llm.js';
 import { TIMEZONE, DEFAULT_LANG } from '../../tgcloud/lib/config.js';
 import { modelSettings, respond, defaultPrompt } from '../../tgcloud/lib/brain.js';
-import { LANGUAGES, isLanguage } from '../../tgcloud/lib/lang.js';
+import { LANGUAGES, isLanguageInput, resolveLanguage } from '../../tgcloud/lib/lang.js';
 import { recentActivity, logActivity } from '../../tgcloud/lib/activity.js';
 import { ownerId, ownerName } from '../../tgcloud/lib/owner.js';
 import { listContacts, getContact, updateContact, NOTES_LIMIT } from '../../tgcloud/lib/contacts.js';
@@ -361,8 +361,10 @@ function validateSetting(key, rawValue) {
       if (value.length > 120) throw bad('Model name is too long');
       return value;
     case 'lang':
-      if (!isLanguage(value)) throw bad('Unknown language code');
-      return value;
+      // Any language: a code, a name, or a regional tag. Stored as the resolved
+      // code so the prompt and the panel agree on what was chosen.
+      if (!isLanguageInput(value)) throw bad('That does not look like a language name or code.');
+      return resolveLanguage(value).code;
     case 'secretary_mode':
       if (!['draft', 'auto', 'off'].includes(value)) throw bad('secretary_mode must be draft, auto or off');
       return value;
@@ -792,11 +794,14 @@ async function handleApi(req, res, url) {
     const chatId = Number(url.pathname.split('/').pop());
     const patch = {};
     if ('notes' in body) patch.notes = String(body.notes ?? '');
-    if ('lang' in body) patch.lang = String(body.lang ?? '');
+    if ('lang' in body) {
+      const raw = String(body.lang ?? '').trim();
+      if (raw && !isLanguageInput(raw)) throw bad('That does not look like a language name or code.');
+      patch.lang = raw ? resolveLanguage(raw).code : '';
+    }
     if ('blocked' in body) patch.blocked = Boolean(body.blocked);
     if (!Object.keys(patch).length) throw bad('Nothing to update.');
     if (patch.notes && patch.notes.length > NOTES_LIMIT) throw bad(`Keep the notes under ${NOTES_LIMIT} characters.`);
-    if (patch.lang && !isLanguage(patch.lang)) throw bad('Unknown language code (or "auto").');
     try {
       return json(res, 200, { ok: true, contact: await updateContact(chatId, patch) });
     } catch (e) {

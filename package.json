@@ -1,6 +1,6 @@
 {
   "name": "tg-ai-secretary",
-  "version": "1.7.4",
+  "version": "1.7.5",
   "description": "A Telegram assistant and secretary that answers for you with a small local model on your own machine: drafts by default, a deterministic safety net, and an auto mode earned by testing the model you actually run.",
   "license": "MIT",
   "private": true,

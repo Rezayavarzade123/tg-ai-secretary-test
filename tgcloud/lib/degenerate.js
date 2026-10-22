@@ -115,6 +115,14 @@ const FALLBACK = {
   en: 'That reply came out wrong on my side — I was repeating you instead of answering. Ask me again, in a few more words?',
   fa: 'پاسخم درست از آب درنیامد — داشتم حرف شما را تکرار می‌کردم. لطفاً دوباره و کمی کامل‌تر بپرسید.',
   ar: 'لم تكن إجابتي صحيحة — كنت أكرر كلامك بدل أن أجيب. اسألني مرة أخرى وبكلمات أكثر.',
+  es: 'La respuesta me salió mal — estaba repitiéndote en vez de contestar. ¿Me lo preguntas otra vez, con alguna palabra más?',
+  fr: 'Ma réponse est mal sortie — je répétais vos mots au lieu de répondre. Pouvez-vous redemander, avec un peu plus de mots ?',
+  de: 'Meine Antwort ist schiefgegangen — ich habe dich wiederholt statt zu antworten. Frag mich bitte noch einmal, mit ein paar Worten mehr.',
+  tr: 'Yanıtım yanlış çıktı — cevap vermek yerine sizi tekrar ediyordum. Birkaç kelime daha ekleyip yeniden sorar mısınız?',
+  ru: 'Ответ получился неудачным — я повторял вас вместо того, чтобы ответить. Спросите ещё раз, чуть подробнее?',
+  zh: '我的回复出错了 — 我在重复你的话，而没有回答。能不能再问一次，多写几个字？',
+  hi: 'मेरा जवाब गड़बड़ हो गया — मैं जवाब देने के बजाय आपकी बात दोहरा रहा था। कृपया थोड़ा और लिखकर फिर पूछें?',
+  sv: 'Mitt svar blev fel — jag upprepade dig i stället för att svara. Fråga igen, med några ord till?',
 };
 
 export function degenerateReply(lang = 'en') {

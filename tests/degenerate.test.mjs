@@ -104,12 +104,29 @@ test('a real request behind a greeting goes to the model', () => {
   // The whole point: matching a greeting must not swallow a question.
   const fa = { ownerName: 'رضا', lang: 'fa' };
   assert.equal(matchSmalltalk('سلام، میشه فردا ساعت پنج جلسه بذاری؟', fa), null);
-  assert.equal(matchSmalltalk('سلام خوبی؟', fa).id, 'greeting');
+  // "hi, are you well?" is a greeting *and* a question about me, so it gets the
+  // answer to the question rather than the plain hello.
+  assert.equal(matchSmalltalk('سلام خوبی؟', fa).id, 'howAreYou');
   assert.equal(matchSmalltalk('/panel', fa), null, 'commands are not small talk');
   assert.equal(matchSmalltalk('چطور میتونم تنظیمات پنل رو عوض کنم؟', fa), null);
   assert.equal(matchSmalltalk('What time is my meeting tomorrow with Ali?', { ownerName: 'Sam' }), null);
+  // Widened greetings must not widen what gets swallowed: a greeting plus a real
+  // request is still a request, and a thank-you with a favour attached is a favour.
+  assert.equal(matchSmalltalk('hey, are you free tomorrow at 5?', { ownerName: 'Sam' }), null);
+  assert.equal(matchSmalltalk('thanks, can you send the file?', { ownerName: 'Sam' }), null);
+  // ...while the ordinary ways of saying hello still count.
+  assert.equal(matchSmalltalk('hi there', { ownerName: 'Sam' }).id, 'greeting');
+  assert.equal(matchSmalltalk('hello again!', { ownerName: 'Sam' }).id, 'greeting');
 });
 
-test('an unknown language still answers, in English', () => {
-  assert.match(matchSmalltalk('hello', { ownerName: 'Sam', lang: 'xx' }).reply, /Sam/);
+test('a language this file cannot write is left to the model, on purpose', () => {
+  // Answering in English a Swedish speaker who said "hej" would be worse than
+  // letting the model answer - and the repetition checks still apply to its reply.
+  assert.equal(matchSmalltalk('hej', { ownerName: 'Sam', lang: 'sv' }), null);
+  assert.equal(matchSmalltalk('hello', { ownerName: 'Sam', lang: 'tlh' }), null);
+  // The same greeting is answered by code where the words exist.
+  assert.match(matchSmalltalk('hola', { ownerName: 'Sam', lang: 'es' }).reply, /Sam/);
+  assert.match(matchSmalltalk('hallo', { ownerName: 'Sam', lang: 'de' }).reply, /Sam/);
+  assert.match(matchSmalltalk('привет', { ownerName: 'Sam', lang: 'ru' }).reply, /Sam/);
+  assert.match(matchSmalltalk('merhaba', { ownerName: 'Sam', lang: 'tr' }).reply, /Sam/);
 });

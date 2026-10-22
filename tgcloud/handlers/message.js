@@ -19,7 +19,7 @@ import { setMuted } from '../lib/secretary.js';
 import { logActivity } from '../lib/activity.js';
 import { parseSendCommand, sendAsOwner, SEND_USAGE } from '../lib/outbox.js';
 import { isOwner, ownerId } from '../lib/owner.js';
-import { LANGUAGES, isLanguage, language, languagePromptName, resolveLang } from '../lib/lang.js';
+import { LANGUAGES, isLanguageInput, resolveLanguage, languagePromptName, resolveLang } from '../lib/lang.js';
 import { matchSmalltalk } from '../lib/smalltalk.js';
 import { isGroupChat, botIdentity, addressesBot, stripAddress, historyScope, groupMode, threadExtra } from '../lib/groups.js';
 
@@ -405,9 +405,12 @@ async function runCommand(chatId, message, { cmd, arg }) {
           await say(chatId, `Chat ${id} now follows the usual language rules.`);
           return;
         }
-        if (!isLanguage(v)) { await say(chatId, `Unknown language "${v}". Use one of: ${LANGUAGES.map((l) => l.code).join(', ')}`); return; }
-        await updateContact(id, { lang: v });
-        await say(chatId, `Chat ${id} will always be answered in ${languagePromptName(v)}.`);
+        // Any language, same rule as /lang: a code, a name, or something the
+        // registry has never heard of - the prompt carries it either way.
+        if (!isLanguageInput(lm[1])) { await say(chatId, 'Usage: /contact <chat_id> lang <code|name|auto>'); return; }
+        const chosen = resolveLanguage(lm[1]);
+        await updateContact(id, { lang: chosen.code });
+        await say(chatId, `Chat ${id} will always be answered in ${chosen.label} (${chosen.code}).`);
         return;
       }
       await say(chatId, 'Usage: /contact <chat_id> note <text>  or  /contact <chat_id> lang <code|auto>');
@@ -571,8 +574,10 @@ async function runCommand(chatId, message, { cmd, arg }) {
         await say(chatId,
           `Reply language: ${languagePromptName(cur)} (${cur})\n` +
           `Follow the person's language: ${auto ? 'ON' : 'OFF'}\n\n` +
-          `Commands:\n/lang <code>  always use this language\n/lang auto on|off  follow whoever writes\n\n` +
-          `Available codes:\n${list}`);
+          `Commands:\n/lang <language>  always use this language\n/lang auto on|off  follow whoever writes\n\n` +
+          `Any language works — a code, a name, or a tag like pt-BR:\n/lang Swedish   /lang tlh   /lang 日本語\n\n` +
+          `The app's own short messages (\"I'm an automated assistant\") are translated into:\n${list}\n` +
+          `For any other language those few sentences stay in English; everything else is the model's language.`);
         return;
       }
       const parts = arg.toLowerCase().split(/\s+/);
@@ -585,13 +590,21 @@ async function runCommand(chatId, message, { cmd, arg }) {
           : `I will always reply in ${languagePromptName(await getSetting('lang', DEFAULT_LANG))}.`);
         return;
       }
-      if (!isLanguage(parts[0])) {
-        await say(chatId, `Unknown language "${parts[0]}". Use one of: ${LANGUAGES.map((l) => l.code).join(', ')}`);
+      // Any language is accepted: a code, a name, or a regional tag. The list below
+      // is what the app can *name*, not what the model may speak.
+      if (!isLanguageInput(arg)) {
+        await say(chatId, `That does not look like a language name or code.\nTry /lang fa, /lang Swedish, /lang pt-BR — or /lang for the list.`);
         return;
       }
-      await setSetting('lang', parts[0]);
-      const lang = language(parts[0]);
-      await say(chatId, `✅ Reply language set to ${lang.label} (${lang.native}).\nUse /lang auto on if I should follow each person instead.`);
+      const chosen = resolveLanguage(arg);
+      await setSetting('lang', chosen.code);
+      const note = chosen.known
+        ? ''
+        : `\n"${chosen.label}" is not one of the ${LANGUAGES.length} the app knows by name, so I pass it to the model as written.`;
+      await say(chatId, `✅ Reply language set to ${chosen.label} (${chosen.native}).\n`
+        + (auto
+          ? 'Following each person is still ON, so this is my default when their language is unclear. /lang auto off forces it for everyone.'
+          : 'I will answer in it whatever the person writes.') + note);
       return;
     }
 

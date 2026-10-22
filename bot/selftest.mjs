@@ -302,6 +302,32 @@ await check('an English sender gets an English prompt even when the default is P
   await setSetting('lang', 'en');
 });
 
+await check('a language the app barely knows still reaches the model as itself', async () => {
+  // Swedish, set from Telegram by name, and a sentence the detector cannot place.
+  await botMessage({ message_id: 41, chat: { id: OWNER, type: 'private' }, from: { id: OWNER, first_name: 'Sam' }, text: '/lang Swedish' });
+  await setSetting('lang_auto', 'on');
+  await setSetting('secretary_mode', 'draft');
+  assert.equal(await getSetting('lang'), 'sv');
+  assert.equal(detectLang('Vi ses imorgon klockan tre'), null, 'the detector is genuinely unsure');
+
+  await businessMessage({
+    business_connection_id: 'conn-1',
+    chat: { id: 5151, type: 'private' },
+    from: { id: 5151, first_name: 'Lars' },
+    text: 'Vi ses imorgon klockan tre',
+  });
+  const system = modelRequests[modelRequests.length - 1].messages.find((m) => m.role === 'system')?.content ?? '';
+  // Not English, which is what the undetected sentence would have become before.
+  assert.match(system, /always reply in Swedish/, system.slice(-400));
+
+  // The app's own short sentences exist in Swedish too, so a draft is labelled and
+  // a fixed reply is not English for a Swedish conversation.
+  const g = guardOutgoing('Jag vidarebefordrar ditt meddelande.', { ownerName: 'Sam', lang: 'sv' });
+  assert.equal(g.text, 'Jag vidarebefordrar ditt meddelande.');
+
+  await setSetting('lang', 'en');
+});
+
 await check('a stranger cannot press the owner\u2019s buttons', async () => {
   await businessMessage({
     business_connection_id: 'conn-1',
@@ -400,6 +426,33 @@ await check('/mode and /lang from Telegram change the same settings the panel wr
   assert.equal(await getSetting('secretary_mode'), 'draft');
   await setSetting('lang', 'en');
   await setSetting('lang_auto', 'on');
+});
+
+await check('/lang accepts any language, not only the ones the app names', async () => {
+  const before = sent.length;
+
+  // A name the registry knows: stored as its code.
+  await botMessage({ message_id: 16, chat: { id: OWNER, type: 'private' }, from: { id: OWNER, first_name: 'Sam' }, text: '/lang Swedish' });
+  assert.equal(await getSetting('lang'), 'sv');
+  assert.match(sent.slice(before).map((m) => m.text).join('\n'), /Swedish/);
+
+  // A tag with a region: the region is dropped, not refused.
+  await botMessage({ message_id: 17, chat: { id: OWNER, type: 'private' }, from: { id: OWNER, first_name: 'Sam' }, text: '/lang pt-BR' });
+  assert.equal(await getSetting('lang'), 'pt');
+
+  // Something no table here has ever heard of: accepted, and said so honestly.
+  const n = sent.length;
+  await botMessage({ message_id: 18, chat: { id: OWNER, type: 'private' }, from: { id: OWNER, first_name: 'Sam' }, text: '/lang tlh' });
+  assert.equal(await getSetting('lang'), 'tlh');
+  assert.match(sent.slice(n).map((m) => m.text).join('\n'), /not one of the \d+ the app knows by name/);
+
+  // A bogus "language" is still refused, with a reason - not silently stored.
+  const m = sent.length;
+  await botMessage({ message_id: 19, chat: { id: OWNER, type: 'private' }, from: { id: OWNER, first_name: 'Sam' }, text: '/lang a b c!' });
+  assert.equal(await getSetting('lang'), 'tlh');
+  assert.match(sent.slice(m).map((m) => m.text).join('\n'), /does not look like a language name or code/);
+
+  await setSetting('lang', 'en');
 });
 
 await check('a stranger writing to the bot directly is ignored', async () => {
@@ -750,9 +803,18 @@ await check('/hours and /contact are validated, not just stored', async () => {
   await setSetting('quiet_start', '');
   await setSetting('quiet_end', '');
 
+  // Any language is accepted for one person too - a code, a name, or a word no
+  // table here knows.
   const before3 = sent.length;
   await botMessage({ message_id: 28, chat: { id: OWNER, type: 'private' }, from: { id: OWNER, first_name: 'Sam' }, text: '/contact 6006 lang klingon' });
-  assert.match(sent.slice(before3).at(-1).text, /Unknown language/);
+  assert.match(sent.slice(before3).at(-1).text, /answered in Klingon \(klingon\)/);
+  await botMessage({ message_id: 29, chat: { id: OWNER, type: 'private' }, from: { id: OWNER, first_name: 'Sam' }, text: '/contact 6006 lang Swedish' });
+  assert.match(sent.slice(before3).at(-1).text, /answered in Swedish \(sv\)/);
+
+  // Junk is still refused rather than stored as a "language".
+  const before4 = sent.length;
+  await botMessage({ message_id: 30, chat: { id: OWNER, type: 'private' }, from: { id: OWNER, first_name: 'Sam' }, text: '/contact 6006 lang a!b' });
+  assert.match(sent.slice(before4).at(-1).text, /Usage: \/contact/);
 });
 
 await check('the control panel answers with live state, and never leaks its token', async () => {
@@ -802,7 +864,7 @@ await check('the control panel answers with live state, and never leaks its toke
   const mixed = await realFetch(`${base}/api/settings`, {
     method: 'POST',
     headers: { ...AUTH, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ settings: { delay_seconds: '37', lang: 'klingon' } }),
+    body: JSON.stringify({ settings: { delay_seconds: '37', lang: 'a b c!' } }),
   });
   assert.equal(mixed.status, 400);
   const afterBad = await (await realFetch(`${base}/api/settings`, { headers: AUTH })).json();
@@ -816,6 +878,19 @@ await check('the control panel answers with live state, and never leaks its toke
   assert.equal(good.status, 200);
   assert.equal(await getSetting('delay_seconds'), '25');
   assert.equal(await getSetting('lang'), 'fa');
+
+  // The panel's language field is free text: a name becomes its code, and a
+  // language the app has no entry for is stored as written instead of refused.
+  for (const [typed, stored] of [['Swedish', 'sv'], ['pt-BR', 'pt'], ['klingon', 'klingon']]) {
+    const r = await realFetch(`${base}/api/settings`, {
+      method: 'POST',
+      headers: { ...AUTH, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ settings: { lang: typed } }),
+    });
+    assert.equal(r.status, 200, `${typed} should be accepted`);
+    assert.equal(await getSetting('lang'), stored, `${typed} -> ${stored}`);
+  }
+  await setSetting('lang', 'fa');
 
   // A missing value is refused instead of becoming 0.
   const noValue = await realFetch(`${base}/api/settings`, {

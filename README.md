@@ -52,7 +52,7 @@ Nothing here is an LLM judging an LLM. Every check is code you can read in an af
 
 Same handlers, same schema, same prompts. The local runtime adds a **control panel** in the browser; Telegram gets `/lang`, `/mode` and inline-button approvals.
 
-> **Status: v1.7 — experimental.** 207 unit tests and 45 end-to-end checks pass, the panel has been audited ([21 findings, all fixed](docs/panel-audit.md)), and every path has been exercised against a fake Telegram and a fake model. It has **not** yet been run against a live Telegram account or a real 1.7B model in this repository. Connect your own bot first, in draft mode, and watch the first ten replies before you trust it.
+> **Status: v1.7 — experimental.** 212 unit tests and 47 end-to-end checks pass, the panel has been audited ([21 findings, all fixed](docs/panel-audit.md)), and every path has been exercised against a fake Telegram and a fake model. It has **not** yet been run against a live Telegram account or a real 1.7B model in this repository. Connect your own bot first, in draft mode, and watch the first ten replies before you trust it.
 
 ## What it does
 
@@ -97,9 +97,11 @@ the same sentence, twice echoing the message word for word.
 Two different answers to that (`tgcloud/lib/degenerate.js`, `tgcloud/lib/smalltalk.js`):
 
 - **Short social messages are answered from code.** Greetings, "who are you", "do you know
-  me", "thanks" — in English, Persian and Arabic. Instant on a slow CPU, exact in the right
-  language, and unable to repeat themselves. The matcher is narrow: `سلام، میشه فردا جلسه
-  بذاری؟` is a question and still goes to the model.
+  me", "thanks" — in English, Persian, Arabic, Spanish, French, German, Turkish and Russian.
+  Instant on a slow CPU, exact in the right language, and unable to repeat themselves. The
+  matcher is narrow: `سلام، میشه فردا جلسه بذاری؟` is a question and still goes to the model.
+  In a language this file cannot write well it deliberately returns nothing and lets the
+  model answer — a hand-written greeting nobody here can check would be worse than silence.
 - **Everything else is checked before it is sent.** An answer that is only the sender's words,
   or the previous answer's phrase in new clothing, or the same sentence twice, is discarded:
   one retry with a correcting system message at a higher temperature, and if that fails too,
@@ -117,6 +119,20 @@ Persian, which a 1.7B model then rendered as *"I am an automated assistant and c
 English"*. Two or more Latin words and no better evidence now means English; a single word
 (`ok`) still defers to the setting. In Secretary mode the sender's language is passed to the
 prompt as an instruction for that reply instead of the vague *"default: Persian"*.
+
+**Any language, not only the ones in the list.** The registry in `tgcloud/lib/lang.js` is a
+list of languages the app can *name* — it is not a whitelist. `/lang Swedish`, `/lang sv-SE`,
+`/lang pt-BR` and `/lang tlh` all set the setting (names become codes, regions are dropped),
+the panel's language field is free text with the known names as suggestions, and a language no
+table here has ever heard of is passed to the model as written. What the app itself cannot do
+for an unknown language is say its own short safety sentences in it, so those stay in English
+and the reply tells you so. Detection was widened to match: Thai, Bengali, Tamil, Telugu,
+Georgian, Hebrew, Urdu and the rest of the non-Latin scripts, plus stop-words for Swedish,
+Danish, Norwegian, Finnish, Polish, Czech, Romanian, Hungarian and Vietnamese. One more rule
+came out of it: when a Latin-script sentence gives no evidence either way, the owner's setting
+wins if it is itself a Latin-script language (a Swedish owner writing `Vi ses imorgon klockan
+tre` gets Swedish, not English); a non-Latin setting still yields English, which is the v1.7.4
+fix above.
 
 ### The probe gate (`tgcloud/lib/probe.js`)
 
@@ -164,7 +180,7 @@ A feature that learns from people can be turned into a permanent instruction by 
 - **Updates from GitHub**, opt-in by default: it checks on a schedule and tells you what is waiting, and installs only when you say so (or when you turn on auto-install, knowing it runs whatever is pushed). Fast-forward only, refuses a dirty or diverged checkout, and rolls back to the commit that ran before. See [Updating](#updating).
 
 **Language**
-- `/lang fa` fixes the reply language; `/lang auto on` follows whoever writes. Detection is local and dependency-free (script test + stop-words), so a small model can't drift into English halfway through.
+- `/lang fa` fixes the reply language, `/lang Swedish` or `/lang tlh` work just as well, and `/lang auto on` follows whoever writes. Detection is local and dependency-free (script test + stop-words), so a small model can't drift into English halfway through.
 - The language line is part of the prompt, not an afterthought, and a per-contact override wins over both.
 
 **Privacy**
@@ -346,7 +362,7 @@ Talk to the bot in your private chat. In groups, only `@you`-addressed commands 
 | `/probe [show]` | Run the eight adversarial cases, or show the last result |
 | `/drafts` | Re-send the pending approval cards |
 | `/send <name\|id> <text>` | Write to someone from your own account, now — the one path that skips the draft, because you asked for it |
-| `/lang`, `/lang <code>`, `/lang auto on\|off` | Reply language |
+| `/lang`, `/lang <any language>`, `/lang auto on\|off` | Reply language — a code, a name, or a tag |
 | `/secretary on\|off` | Master switch for secretary mode |
 | `/secretaryinfo <text>` | The only information the assistant may share |
 | `/delay <seconds>` | Wait after a person's last message (default 50, max 300) |
@@ -418,8 +434,8 @@ tg-ai-secretary/
 ## Tests
 
 ```bash
-npm test            # 207 unit tests
-npm run selftest    # 45 end-to-end checks (fake Telegram + fake model)
+npm test            # 212 unit tests
+npm run selftest    # 47 end-to-end checks (fake Telegram + fake model)
 npm run hw          # machine report
 ```
 
@@ -451,6 +467,48 @@ What the numbers cover:
 - **Serverless quirk:** the Ollama key lives in the database there, because that runtime documents no secrets store. The local runtime reads it from `bot/.env` or the panel.
 
 ## Changelog
+
+### v1.7.5 — any language, not only the ones with a table
+
+The list of languages was doing two jobs: naming the languages the app can speak its own short
+sentences in, and deciding which languages you were allowed to choose. Only the first is honest.
+
+**Changed**
+- **The setting accepts any language.** `/lang`, the panel's settings page and its per-person
+  field all take a code (`sv`), a name (`Swedish`, `Svenska`, `فارسی`) or a tag (`sv-SE`,
+  `pt-BR`). Names resolve to codes, regions are dropped, and anything else — `tlh`, `Klingon` —
+  is stored as written and passed to the model as an instruction to reply in it.
+- **The panel's Reply-language select became a text field** with the known names offered as
+  suggestions (`<datalist>`), and it no longer drops a value it does not recognise on the floor.
+  Same for the per-person language field on the People tab.
+- **`/lang` with no argument** now says what actually works, and lists the languages the app can
+  translate its own safety sentences into rather than pretending that list is the limit.
+- **Detection covers far more.** Added Thai, Bengali, Punjabi, Gujarati, Tamil, Telugu, Kannada,
+  Malayalam, Sinhala, Burmese, Khmer, Georgian, Armenian and Ethiopic scripts; Urdu told apart
+  from Arabic by `ٹ ڈ ڑ ں ھ ے`, Ukrainian from Russian by `і ї є ґ`; stop-words for Swedish,
+  Danish, Norwegian, Finnish, Polish, Czech, Romanian, Hungarian and Vietnamese.
+- **A Latin-script setting is no longer overridden by the English fallback.** With `lang: sv`
+  and a sentence the detector cannot place, the reply is Swedish; a non-Latin setting still
+  gives English for a Latin message, which is the v1.7.4 fix.
+- **Smalltalk recognises greetings in far more languages** — `hola`, `bonjour`, `hallo`,
+  `merhaba`, `привет`, `שלום`, `नमस्ते`, `xin chào` and more — and answers in them where the
+  words exist (en, fa, ar, es, fr, de, tr, ru). The old rule still holds tightly: a greeting
+  wrapped around a real request goes to the model, so `سلام، میشه فردا جلسه بذاری؟` is still a
+  request. `سلام خوبی؟` now gets the "how are you" answer rather than the plain hello, and
+  `thanks, can you send the file?` is a favour, not a thank-you.
+- **The probe stopped failing a language it cannot detect.** With `lang: sv` and auto language
+  off, a correct Swedish reply used to be scored as English — and a failed probe locks auto
+  mode. A reply with no language evidence at all is now unscorable for a Latin-script setting
+  (it still counts as English against a Persian or Russian one, which is the drift that check
+  exists to catch).
+
+**Still English for unknown languages, on purpose**
+- The guard's fixed sentences, the repetition apology and the smalltalk replies exist in a
+  handful of languages (en, fa, ar, es, fr, de, tr, ru). For anything else they fall back to
+  English — a wrong-but-honest English sentence beats a machine translation nobody checked —
+  and the `/lang` reply tells you that this is what will happen.
+- The smalltalk matcher returns `null` for a language it cannot write, so the model answers.
+  It recognises greetings in many languages but only answers from code where the words exist.
 
 ### v1.7.4 — a stranger got the same apology five times
 
