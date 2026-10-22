@@ -63,6 +63,23 @@ test('the page loads no inline script and no remote asset (the CSP allows neithe
   assert.match(server, /frame-ancestors 'none'/);
 });
 
+test('the reply language can be any language, not only the ones in the list', () => {
+  // The registry is a convenience list; the control must not be able to refuse a
+  // language it has no entry for. A free-text field plus suggestions, and the
+  // per-person field in the People view is free text too.
+  assert.match(js, /id="langAny"/, 'a free-text language field must exist');
+  assert.match(js, /<datalist id="langList">/, 'known names are offered as suggestions');
+  assert.match(js, /id="lang-\$\{c\.chatId\}" list="langList"/, 'the per-person field is free text');
+  assert.ok(!/<select id="langSel">\s*<\/select>/.test(js));
+
+  // A stored value outside the registry is shown, not silently replaced by the
+  // first entry of the list.
+  assert.match(js, /not in the list/, 'an unknown saved language must be visible');
+
+  // Saving goes through the same settings endpoint the select uses.
+  assert.match(js, /saveSettings\(\{ lang: v \}/);
+});
+
 test('every element the panel writes has a style or is a known bare element', () => {
   // A cheap guard against typo'd class names that silently lose their styling.
   const classes = [...new Set([...js.matchAll(/class="([^"$]+)"/g)].flatMap((m) => m[1].split(/\s+/)))].filter(Boolean);

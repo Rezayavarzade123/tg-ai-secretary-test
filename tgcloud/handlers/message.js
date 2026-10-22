@@ -16,9 +16,11 @@ import { metricsSummary } from '../lib/metrics.js';
 import { listFacts, deleteFact, factsEnabled } from '../lib/memory.js';
 import { updater as updaterImpl } from '../lib/update-bridge.js';
 import { setMuted } from '../lib/secretary.js';
+import { logActivity } from '../lib/activity.js';
 import { parseSendCommand, sendAsOwner, SEND_USAGE } from '../lib/outbox.js';
 import { isOwner, ownerId } from '../lib/owner.js';
-import { LANGUAGES, isLanguage, language, languagePromptName } from '../lib/lang.js';
+import { LANGUAGES, isLanguageInput, resolveLanguage, languagePromptName, resolveLang } from '../lib/lang.js';
+import { matchSmalltalk } from '../lib/smalltalk.js';
 import { isGroupChat, botIdentity, addressesBot, stripAddress, historyScope, groupMode, threadExtra } from '../lib/groups.js';
 
 const HELP = `Your assistant is ready. Just write to me normally, or use:
@@ -131,9 +133,26 @@ export default async function (message) {
     return;
   }
 
+  // Greetings, "who are you", "do you know me" and "thanks" are answered from code:
+  // instant, in the right language, and impossible to repeat themselves. A 1-2B
+  // model answering "سلام" with "سلام! ما روی از چی؟" is what this prevents.
+  const preferred = await getSetting('lang', DEFAULT_LANG);
+  const autoLang = (await getSetting('lang_auto', DEFAULT_LANG_AUTO)) !== 'off';
+  const replyLang = autoLang ? resolveLang(preferred, text) : preferred;
+
+  const small = matchSmalltalk(text, {
+    ownerName: await getSetting('owner_name', 'your assistant'),
+    lang: replyLang,
+  });
+  if (small) {
+    await say(chatId, small.reply);
+    await logActivity('info', `Answered "${text.slice(0, 40)}" from code (${small.id}).`);
+    return;
+  }
+
   try {
     const answer = await withTyping(chatId, null,
-      () => respond({ scope: 'bot', userText: text, mode: 'bot' }));
+      () => respond({ scope: 'bot', userText: text, mode: 'bot', lang: replyLang === preferred ? null : replyLang }));
     await say(chatId, answer);
   } catch (e) {
     console.error(e);
@@ -378,17 +397,22 @@ async function runCommand(chatId, message, { cmd, arg }) {
         await say(chatId, `Saved for chat ${id}. I will use this when replying to them — it is the only thing I know about them.`);
         return;
       }
-      const lm = /^lang\s+(\S+)$/i.exec(rest);
+      // The rest of the line, not one word: "Bahasa Indonesia" and "Tiếng Việt" are
+      // languages, and matching only the first word silently stored "Bahasa".
+      const lm = /^lang\s+(.+)$/i.exec(rest);
       if (lm) {
-        const v = lm[1].toLowerCase();
+        const v = lm[1].trim().toLowerCase();
         if (v === 'auto' || v === 'reset') {
           await updateContact(id, { lang: '' });
           await say(chatId, `Chat ${id} now follows the usual language rules.`);
           return;
         }
-        if (!isLanguage(v)) { await say(chatId, `Unknown language "${v}". Use one of: ${LANGUAGES.map((l) => l.code).join(', ')}`); return; }
-        await updateContact(id, { lang: v });
-        await say(chatId, `Chat ${id} will always be answered in ${languagePromptName(v)}.`);
+        // Any language, same rule as /lang: a code, a name, or something the
+        // registry has never heard of - the prompt carries it either way.
+        if (!isLanguageInput(lm[1])) { await say(chatId, 'Usage: /contact <chat_id> lang <code|name|auto>'); return; }
+        const chosen = resolveLanguage(lm[1].trim());
+        await updateContact(id, { lang: chosen.code });
+        await say(chatId, `Chat ${id} will always be answered in ${chosen.label} (${chosen.code}).`);
         return;
       }
       await say(chatId, 'Usage: /contact <chat_id> note <text>  or  /contact <chat_id> lang <code|auto>');
@@ -546,14 +570,17 @@ async function runCommand(chatId, message, { cmd, arg }) {
 
     case 'lang': {
       const cur = await getSetting('lang', DEFAULT_LANG);
+      const curEntry = resolveLanguage(cur);
       const auto = (await getSetting('lang_auto', 'on')) !== 'off';
       const list = LANGUAGES.map((l) => `${l.code} — ${l.native}`).join('\n');
       if (!arg) {
         await say(chatId,
-          `Reply language: ${languagePromptName(cur)} (${cur})\n` +
+          `Reply language: ${curEntry.prompt} (${curEntry.code})\n` +
           `Follow the person's language: ${auto ? 'ON' : 'OFF'}\n\n` +
-          `Commands:\n/lang <code>  always use this language\n/lang auto on|off  follow whoever writes\n\n` +
-          `Available codes:\n${list}`);
+          `Commands:\n/lang <language>  always use this language\n/lang auto on|off  follow whoever writes\n\n` +
+          `Any language works — a code, a name, or a tag like pt-BR:\n/lang Swedish   /lang tlh   /lang 日本語\n\n` +
+          `The app's own short messages (\"I'm an automated assistant\") are translated into:\n${list}\n` +
+          `For any other language those few sentences stay in English; everything else is the model's language.`);
         return;
       }
       const parts = arg.toLowerCase().split(/\s+/);
@@ -566,13 +593,21 @@ async function runCommand(chatId, message, { cmd, arg }) {
           : `I will always reply in ${languagePromptName(await getSetting('lang', DEFAULT_LANG))}.`);
         return;
       }
-      if (!isLanguage(parts[0])) {
-        await say(chatId, `Unknown language "${parts[0]}". Use one of: ${LANGUAGES.map((l) => l.code).join(', ')}`);
+      // Any language is accepted: a code, a name, or a regional tag. The list below
+      // is what the app can *name*, not what the model may speak.
+      if (!isLanguageInput(arg)) {
+        await say(chatId, `That does not look like a language name or code.\nTry /lang fa, /lang Swedish, /lang pt-BR — or /lang for the list.`);
         return;
       }
-      await setSetting('lang', parts[0]);
-      const lang = language(parts[0]);
-      await say(chatId, `✅ Reply language set to ${lang.label} (${lang.native}).\nUse /lang auto on if I should follow each person instead.`);
+      const chosen = resolveLanguage(arg);
+      await setSetting('lang', chosen.code);
+      const note = chosen.known
+        ? ''
+        : `\n"${chosen.label}" is not one of the ${LANGUAGES.length} the app knows by name, so I pass it to the model as written.`;
+      await say(chatId, `✅ Reply language set to ${chosen.label} (${chosen.native}).\n`
+        + (auto
+          ? 'Following each person is still ON, so this is my default when their language is unclear. /lang auto off forces it for everyone.'
+          : 'I will answer in it whatever the person writes.') + note);
       return;
     }
 
@@ -816,7 +851,7 @@ async function runCommand(chatId, message, { cmd, arg }) {
       const baseUrl = await getSetting('llm_base_url', LOCAL_LLM_URL);
       const cloudKey = (await getSetting('llm_api_key')) ?? (await getSetting('ollama_key'));
       const key = provider === 'cloud' ? (cloudKey ? 'saved' : 'MISSING (use /setkey)') : 'not needed (local)';
-      const conns = JSON.parse(await getSetting('secretary_conns', '[]')).length;
+      const conns = await connectionCount();
       const mode = await getSetting('secretary_mode', DEFAULT_SECRETARY_MODE);
       const lang = await getSetting('lang', DEFAULT_LANG);
       const auto = (await getSetting('lang_auto', 'on')) !== 'off';
@@ -864,5 +899,15 @@ async function runCommand(chatId, message, { cmd, arg }) {
 
     default:
       await say(chatId, `Unknown command /${cmd}.\n\n` + HELP);
+  }
+}
+
+// A corrupted or hand-edited settings value must not take /status down with it.
+async function connectionCount() {
+  try {
+    const ids = JSON.parse(await getSetting('secretary_conns', '[]'));
+    return Array.isArray(ids) ? ids.length : 0;
+  } catch {
+    return 0;
   }
 }

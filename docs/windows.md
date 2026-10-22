@@ -77,9 +77,10 @@ tg-secretary status      # task state, version, panel, token, model server
 tg-secretary panel       # the URL with its token
 tg-secretary logs -f     # follow bot\state\bot.log
 tg-secretary restart     # after editing the settings file
+tg-secretary stop        # stops it, and the 5-minute check respects that until you start it
 tg-secretary update      # what is on GitHub; then: tg-secretary update apply
 tg-secretary hw          # what this machine can run
-tg-secretary paths       # code, settings, data, log
+tg-secretary paths       # code, settings, data, log — and whether bin\ is on your PATH
 ```
 
 `tg-secretary.cmd` forwards to `tg-secretary.ps1`, so it works from `cmd.exe`, PowerShell
@@ -89,7 +90,12 @@ spelling, without the command stopping with *A parameter cannot be found*.
 
 From the repository root, `tg-secretary` also works **before** you install anything: there is
 a `tg-secretary.cmd` at the top of the checkout that runs the copy you are standing in.
-It controls that copy, with its own state in `bot\state` — not the installed one.
+
+Which copy it *controls* is decided once, and said out loud: the checkout wins when it is the
+directory the Scheduled Task runs, or when nothing is installed at all; otherwise the installed
+copy wins — because that is the one that is actually running — and `status` adds a line naming
+the checkout it came from (`-Dir` switches to it). Before v1.7.2 the second case happened
+silently, which made a `status` from the repository describe a directory you had not meant.
 
 A new terminal is needed once after installing, because the PATH change is per-user and
 does not reach the window you installed from. The installer prints the full path of the
@@ -142,8 +148,9 @@ The PowerShell half cannot be executed in the Linux checkout this project is dev
 in. It is checked structurally instead: bracket balance with PowerShell's own string and
 comment rules, no PowerShell 7-only syntax (the scripts declare `#Requires -Version 5.1`),
 no writes to read-only automatic variables like `$pid`, the cmdlets it calls actually
-exist, that `$script:` is used where a value has to survive a scriptblock, and both front
-ends offering the same commands. That catches the mistakes that usually break installers,
+exist, that `$script:` is used where a value has to survive a scriptblock, that the script
+path comes from `$PSCommandPath` (the first version used `$MyInvocation.MyCommand.Path`
+inside a function, where it is empty), and both front ends offering the same commands. That catches the mistakes that usually break installers,
 but **the first real run on Windows is yours** — the same
 honesty the README applies to Telegram and the model.
 
@@ -157,5 +164,7 @@ honesty the README applies to Telegram and the model.
 | `A parameter cannot be found that matches parameter name …` | You are running an older `tg-secretary.ps1`: flags are parsed by the script itself from v1.6 on |
 | `git.exe : From https://…` then `NativeCommandError` | Fixed in 1.6.1: `install.ps1` in front of you is older. Re-run the newer one, or `git -C <install> pull` first |
 | `'tg-secretary' is not recognized as an internal or external command` | Either the installer has not reached its PATH step yet, or this window predates the change. Open a new terminal, run the full path `"%LOCALAPPDATA%\Programs\tg-ai-secretary\bin\tg-secretary.cmd" status`, or — inside the checkout — use `.\tg-secretary.cmd status` |
+| `task Ready`, `bot not running` | The task's trigger is *at logon*, and it was registered after you signed in. `tg-secretary start`. From v1.7.2 the task also checks every 5 minutes and starts the bot if it is down, so this heals by itself |
+| The bot restarts after `tg-secretary stop` | That was the 5-minute check undoing a deliberate stop; it is fixed in v1.7.2 (`stop` leaves a marker the task respects) |
 | The task runs then stops immediately | `tg-secretary logs` — usually a missing token or a port already in use |
 | "No AVX2" on a machine that has it | It cannot: the installer measures with kernel32. `npm run hw` without it says "not measured" instead of guessing |

@@ -220,5 +220,16 @@ test('the probe judges language by what the settings actually ask for', () => {
   // detectLang() gives null for plain English, because English is what "no
   // distinctive script found" means. That must count as English, not as unknown.
   assert.equal(languageVerdict('Yes.', { lang: 'en', langAuto: false }).ok, true);
+
+  // Any language can be configured, and the detector cannot prove every reply.
+  // "No evidence" is not "wrong": a Swedish reply with no stop-words used to be
+  // scored as English, which locked auto mode out for languages the detector does
+  // not know.
+  assert.equal(languageVerdict('Ok.', { lang: 'sv', langAuto: false }).ok, true);
+  const unverifiable = languageVerdict('Vi ses.', { lang: 'sv', langAuto: false });
+  assert.equal(unverifiable.ok, true);
+  assert.match(unverifiable.why, /cannot verify sv/);
+  // A reply the detector *can* place is still judged against the setting.
+  assert.equal(languageVerdict('بله، در دسترس هستم.', { lang: 'sv', langAuto: false }).ok, false);
   assert.equal(languageVerdict('Yes.', { lang: 'fa', langAuto: false }).ok, false, 'a bare English word is still English');
 });

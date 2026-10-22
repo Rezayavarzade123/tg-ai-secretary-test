@@ -119,7 +119,30 @@ function Test-Install([string] $Path) {
     return ($Path -and (Test-Path (Join-Path $Path 'package.json')) -and (Test-Path (Join-Path $Path 'bot\runner.mjs')))
 }
 
+# Which directory the Scheduled Task actually runs. Needed before Find-Install so a
+# checkout can tell whether it is the installed copy or a second tree.
+function Get-TaskHome([string] $Name) {
+    try {
+        $task = Get-ScheduledTask -TaskName $Name -ErrorAction Stop
+        $action = $task.Actions | Select-Object -First 1
+        $work = if ($action.WorkingDirectory) { $action.WorkingDirectory } else { Split-Path -Parent $action.Execute }
+        if ($work) { return [System.IO.Path]::GetFullPath($work).TrimEnd('\') }
+    } catch { }
+    return ''
+}
+
 function Find-Install {
+    # $PSCommandPath (not $MyInvocation.MyCommand.Path): inside a function there is no
+    # command path, so that expression is empty and the script never recognised the
+    # checkout it was called from. $PSCommandPath is script-scope.
+    $self = $PSCommandPath
+
+    $selfRoot = ''
+    if ($self) {
+        $candidate = Split-Path -Parent (Split-Path -Parent $self)
+        if (Test-Install $candidate) { $selfRoot = [System.IO.Path]::GetFullPath($candidate).TrimEnd('\') }
+    }
+
     if ($Dir) {
         if (-not (Test-Install $Dir)) { Fail "No installation at $Dir (expected package.json and bot\runner.mjs).`n     Check the path, or install first: .\install.ps1 -Dir `"$Dir`"" }
         return [System.IO.Path]::GetFullPath($Dir)
@@ -128,16 +151,26 @@ function Find-Install {
         if (-not (Test-Install $env:SECRETARY_HOME)) { Fail "SECRETARY_HOME=$($env:SECRETARY_HOME) is not an installation." }
         return [System.IO.Path]::GetFullPath($env:SECRETARY_HOME)
     }
-    $self = $MyInvocation.MyCommand.Path
-    if ($self) {
-        $candidate = Split-Path -Parent (Split-Path -Parent $self)
-        if (Test-Install $candidate) { return [System.IO.Path]::GetFullPath($candidate) }
+
+    $installed = ''
+    foreach ($c in @((Join-Path $env:LOCALAPPDATA 'Programs\tg-ai-secretary'), (Join-Path $env:ProgramData 'tg-ai-secretary'))) {
+        if (Test-Install $c) { $installed = [System.IO.Path]::GetFullPath($c).TrimEnd('\'); break }
     }
-    $candidates = @(
-        (Join-Path $env:LOCALAPPDATA 'Programs\tg-ai-secretary'),
-        (Join-Path $env:ProgramData 'tg-ai-secretary')
-    )
-    foreach ($c in $candidates) { if (Test-Install $c) { return [System.IO.Path]::GetFullPath($c) } }
+
+    # Running this right after cloning put the command on the checkout and silently
+    # controlled %LOCALAPPDATA% instead - the opposite of what "the directory this
+    # script lives in" promises. The checkout wins only when it *is* the install the
+    # task runs, or when there is no installed copy at all; otherwise the installed
+    # service wins and the caller is told, because that is the one that is running.
+    if ($selfRoot) {
+        $taskHome = Get-TaskHome $TaskName
+        if ($taskHome -and $taskHome -ieq $selfRoot) { return $selfRoot }
+        if (-not $installed) { return $selfRoot }
+        $script:OtherRoot = $selfRoot
+        return $installed
+    }
+    if ($installed) { return $installed }
+
     Fail @"
 I cannot find the installation.
      Run this again with -Dir <path>, or set `$env:SECRETARY_HOME.
@@ -189,6 +222,9 @@ if (Test-Path $tokenFile) { $PanelToken = (Get-Content $tokenFile -Raw).Trim() }
 if (-not $PanelToken) { $PanelToken = Get-Setting 'PANEL_TOKEN' '' }
 
 $LogFile = Join-Path $StateDir 'bot.log'
+# A deliberate stop has to survive the task's periodic check, or "stop" would last
+# five minutes. bin\run-bot.cmd refuses to start while this file exists.
+$StopMarker = Join-Path $StateDir 'stopped'
 
 # --- state --------------------------------------------------------------------
 
@@ -230,6 +266,10 @@ function Show-Status {
     $running = Test-Running
     Write-Host "tg-secretary $Version"
     Write-Host "  code        $InstallDir"
+    if ($script:OtherRoot) {
+        Write-Host "  note        this script lives in $($script:OtherRoot); the copy above is the installed one." -ForegroundColor DarkGray
+        Write-Host "              Use -Dir `"$($script:OtherRoot)`" to control that checkout instead." -ForegroundColor DarkGray
+    }
     Write-Host "  settings    $(if ($SettingsFile) { $SettingsFile } else { 'none (defaults, plus the panel)' })"
     Write-Host "  data        $StateDir"
 
@@ -244,7 +284,16 @@ function Show-Status {
     }
 
     if ($running) { Write-Host '  bot         running' -ForegroundColor Green }
-    else { Write-Host '  bot         not running' -ForegroundColor Yellow }
+    else {
+        Write-Host '  bot         not running' -ForegroundColor Yellow
+        if ($task) {
+            # The task's trigger is "at logon", so a machine that was already logged in
+            # when it was registered - or a clean exit since - leaves it Ready and idle.
+            Write-Host "              start it now: tg-secretary start" -ForegroundColor DarkGray
+        } else {
+            Write-Host "              no Scheduled Task: tg-secretary start runs it in this window" -ForegroundColor DarkGray
+        }
+    }
 
     if (Test-Panel) {
         Write-Host "  panel       answering on $PanelUrl" -ForegroundColor Green
@@ -293,6 +342,8 @@ function Show-Panel {
 }
 
 function Start-Bot {
+    # Asking for it to run cancels an earlier stop.
+    if (Test-Path $StopMarker) { Remove-Item $StopMarker -Force -ErrorAction SilentlyContinue }
     $fg = $ForegroundFlag
     if (-not $fg -and (Test-Running)) {
         Write-Ok 'Already running'
@@ -301,11 +352,27 @@ function Start-Bot {
 
     $task = Get-Task
     if ($fg -or -not $task) {
-        if (-not $task) { Write-Dim 'No Scheduled Task; running in this window. Ctrl+C stops it.' }
+        if (-not $task) {
+            Write-Dim 'No Scheduled Task; running in this window. Ctrl+C stops it.'
+        } else {
+            # The task checks every few minutes whether the bot is running, so a
+            # foreground run would get a second copy started underneath it and one of
+            # the two would lose the lock. Pause the task for the duration.
+            if ($task.State -eq 'Running') { Stop-ScheduledTask -TaskName $TaskName; Start-Sleep -Seconds 1 }
+            [System.IO.File]::WriteAllText($StopMarker, "foreground run`r`n", (New-Object System.Text.UTF8Encoding($false)))
+            Write-Dim 'Running in this window (the Scheduled Task is paused until it ends). Ctrl+C stops it.'
+        }
         Push-Location $InstallDir
         try {
             & $NodePath --import ./bot/register.mjs bot/runner.mjs
-        } finally { Pop-Location }
+        } finally {
+            Pop-Location
+            # The window is closing either way; hand the bot back to the task.
+            if ($task) {
+                Remove-Item $StopMarker -Force -ErrorAction SilentlyContinue
+                Write-Dim 'Foreground run ended; the Scheduled Task may start the bot again.'
+            }
+        }
         return
     }
 
@@ -320,11 +387,16 @@ function Start-Bot {
 }
 
 function Stop-Bot {
+    # The marker comes first: the task checks every few minutes and would otherwise
+    # start the bot again while this command is still finishing.
+    if (-not (Test-Path $StateDir)) { $null = New-Item -ItemType Directory -Path $StateDir -Force }
+    [System.IO.File]::WriteAllText($StopMarker, "stopped by tg-secretary`r`n", (New-Object System.Text.UTF8Encoding($false)))
+
     $task = Get-Task
     if ($task) {
         if ($task.State -eq 'Running') {
             Stop-ScheduledTask -TaskName $TaskName
-            Write-Ok 'Stopped'
+            Write-Ok 'Stopped (the task will not restart it until you run: tg-secretary start)'
             return
         }
     }
@@ -341,6 +413,7 @@ function Stop-Bot {
 }
 
 function Restart-Bot {
+    if (Test-Path $StopMarker) { Remove-Item $StopMarker -Force -ErrorAction SilentlyContinue }
     $task = Get-Task
     if (-not $task) {
         Write-Host 'No task to restart; starting it instead.'
@@ -411,6 +484,22 @@ function Show-Paths {
     Write-Host "state     $StateDir"
     Write-Host "token     $(Join-Path $StateDir 'panel-token')"
     Write-Host "log       $LogFile"
+
+    # The question behind "tg-secretary is not recognized": is the directory that holds
+    # the command actually on PATH, and is it on PATH for *this* window?
+    $binDir = Join-Path $InstallDir 'bin'
+    $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+    $onUserPath = [bool](($userPath -split ';') | Where-Object { $_ -and $_.TrimEnd('\') -ieq $binDir })
+    $onThisPath = [bool](($env:Path -split ';') | Where-Object { $_ -and $_.TrimEnd('\') -ieq $binDir })
+    Write-Host "command   $(Join-Path $binDir 'tg-secretary.cmd')"
+    if ($onUserPath -and $onThisPath) {
+        Write-Host "path      on your PATH; 'tg-secretary' resolves in this window" -ForegroundColor Green
+    } elseif ($onUserPath) {
+        Write-Host "path      on your PATH, but not in this window (it was opened before the change)" -ForegroundColor Yellow
+        Write-Host "          open a new terminal, or run the full path above" -ForegroundColor DarkGray
+    } else {
+        Write-Host "path      NOT on your PATH: run the full path above, or re-run install.ps1" -ForegroundColor Yellow
+    }
 }
 
 function Invoke-Uninstall {

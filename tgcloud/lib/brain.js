@@ -15,6 +15,8 @@ import { languageLine } from './lang.js';
 import { getContact, contactPromptLine } from './contacts.js';
 import { factsPromptSection, learnFromConversation, shouldLearn, factsEnabled } from './memory.js';
 import { recordMetric } from './metrics.js';
+import { analyseAnswer, degenerateReply, correctionNote } from './degenerate.js';
+import { logActivity } from './activity.js';
 
 // Two modes, each with its own prompt:
 //   "bot"       : you, talking to the bot in your private chat
@@ -37,6 +39,7 @@ export function defaultPrompt(mode, ownerName) {
   return [
     `You are the personal assistant of ${ownerName}, talking with them directly in a Telegram chat.`,
     `Style: concise, warm, practical. Plain text only (no Markdown tables or headings; short lists are fine). Reply in the language the owner writes in.`,
+    `Never repeat the owner's message back at them, and never answer a greeting with only a greeting pattern: say something with content, in your own words. If a question is unclear, ask one short question instead of guessing.`,
     `Limits: you exist only inside this chat. You cannot set reminders, read the owner's other chats, or access calendars or email. You cannot send a message by yourself: when the owner asks you to tell somebody something, do not say it is impossible - tell them that /send <name or chat id> <text> sends it from their own account, and that you will not send anything on your own.`,
   ].join('\n');
 }
@@ -153,7 +156,7 @@ export async function modelSettings() {
 // mode: "bot" (you, privately) or "secretary" (someone writing to your main account)
 // remember=false regenerates an answer without touching the conversation memory
 // (used by the "Regenerate" button on a draft).
-export async function respond({ scope, userText, mode, remember = true, chatId = null, lang = null, timeoutMs }) {
+export async function respond({ scope, userText, mode, remember = true, chatId = null, lang = null, timeoutMs, onDegenerate = 'reply' }) {
   const { provider, baseUrl, apiKey, model } = await modelSettings();
   if (provider === 'cloud' && !apiKey) {
     throw new Error('No cloud API key saved. Send /setkey <key>, or set the brain to "local" in the control panel.');
@@ -181,9 +184,94 @@ export async function respond({ scope, userText, mode, remember = true, chatId =
   const answer = result.text;
   if (!answer) throw new Error('The model returned an empty reply. Try again, or change the model with /model.');
 
-  if (remember) await rememberExchange(scope, userText, answer, mode);
+  // A small model can hand the message back, or bring back the same canned phrase
+  // it used last turn. Once is a slip; storing it makes it the conversation's
+  // context and the loop feeds itself. So: judge it, retry once with a nudge, and
+  // if it happens again say so from code rather than send a repetition.
+  const recentAnswers = past.filter((m) => m.role === 'assistant').map((m) => m.content).slice(-3);
+  const verdict = analyseAnswer({ answer, userText, recentAnswers });
 
-  return answer;
+  let final = answer;
+  let finalVerdict = verdict;
+
+  if (onDegenerate !== 'off' && !verdict.ok) {
+    await logDegenerate(scope, mode, verdict, userText, answer);
+    try {
+      const second = await chat({
+        provider,
+        baseUrl,
+        apiKey,
+        model,
+        messages: [
+          { role: 'system', content: system },
+          ...past,
+          { role: 'user', content: userText },
+          { role: 'assistant', content: answer },
+          { role: 'system', content: correctionNote() },
+        ],
+        maxTokens: mode === 'secretary' ? NUM_PREDICT_SECRETARY : NUM_PREDICT_BOT,
+        // Warmer than the first try: repeating the same text is what a low
+        // temperature makes most likely.
+        temperature: mode === 'secretary' ? 0.5 : 0.8,
+        ...(timeoutMs ? { timeoutMs } : {}),
+      });
+      await recordMetric({ mode, model: second.model, usage: second.usage, ms: second.ms });
+      if (second.text) {
+        const retryVerdict = analyseAnswer({ answer: second.text, userText, recentAnswers });
+        if (retryVerdict.ok) {
+          final = second.text;
+          finalVerdict = retryVerdict;
+        } else {
+          finalVerdict = retryVerdict;
+        }
+      }
+    } catch (e) {
+      // A failed retry is not a failed reply; the fallback below is still honest.
+      console.warn('retry after a degenerate answer failed:', e?.message ?? e);
+    }
+
+    if (!finalVerdict.ok) {
+      // Two failures in a row. In your own chat, say so - you asked, and an honest
+      // sentence is better than a repetition. In Secretary mode the reader is
+      // somebody else, and they should get silence rather than the same apology five
+      // times; the caller turns this into a message to you instead.
+      await logActivity('info', `Replaced a degenerate reply (${finalVerdict.reasons.join(', ')}).`);
+      if (onDegenerate === 'throw') {
+        const err = new Error('The model kept repeating itself, so nothing was sent.');
+        err.code = 'LLM_DEGENERATE';
+        err.reasons = finalVerdict.reasons;
+        throw err;
+      }
+      return degenerateReply(await replyLanguage(mode, chatId, lang, past, userText));
+    }
+  }
+
+  if (remember) await rememberExchange(scope, userText, final, mode);
+
+  return final;
+}
+
+// Which language the apology should be in: the reply language if it is known, else
+// the language of the message that produced it.
+async function replyLanguage(mode, chatId, override, past, userText) {
+  const { resolveLang } = await import('./lang.js');
+  const { getContact } = await import('./contacts.js');
+  const fallback = await getSetting('lang', DEFAULT_LANG);
+  const auto = (await getSetting('lang_auto', DEFAULT_LANG_AUTO)) !== 'off';
+  if (override) return override;
+  if (mode === 'secretary' && chatId) {
+    const contact = await getContact(chatId);
+    if (contact?.lang) return contact.lang;
+  }
+  if (!auto) return fallback;
+  return resolveLang(fallback, userText);
+}
+
+async function logDegenerate(scope, mode, verdict, userText, answer) {
+  try {
+    const { logActivity } = await import('./activity.js');
+    await logActivity('info', `The model repeated itself (${verdict.reasons.join(', ')}) for: ${String(userText).slice(0, 80)} — ${String(answer).slice(0, 80)}`);
+  } catch { /* logging is a nicety */ }
 }
 
 // Add an exchange to the conversation memory. Used by respond(), and by draft

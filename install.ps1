@@ -532,6 +532,43 @@ Invoke-Step "create $StateDir" {
 }
 
 # --- 5. the task --------------------------------------------------------------
+
+# "Starts at logon" alone is not enough. Register the task on a machine that is already
+# logged in and it sits Ready until the next sign-in; a clean exit (an update, a Ctrl+C
+# in the foreground) leaves it down the same way. A repetition on the trigger makes the
+# task check every few minutes: with -MultipleInstances IgnoreNew, a running bot is left
+# alone and a stopped one is started. That is a watchdog built from the scheduler, not a
+# second process to supervise.
+#
+# PowerShell 5.1 cannot set Repetition on an AtLogOn trigger directly, so it is borrowed
+# from a -Once trigger. Everything here is best-effort: if a build refuses the repetition
+# the task still starts at logon, which is what it did before.
+function New-BotTrigger([string] $User, [int] $EveryMinutes = 5) {
+    $trigger = New-ScheduledTaskTrigger -AtLogOn -User $User
+    $duration = [TimeSpan]::MaxValue
+    try {
+        $repeat = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) `
+            -RepetitionInterval (New-TimeSpan -Minutes $EveryMinutes) `
+            -RepetitionDuration $duration
+        $trigger.Repetition = $repeat.Repetition
+        Write-Ok "Task checks every $EveryMinutes minutes; a stopped bot is started again"
+    } catch {
+        try {
+            # Some builds reject MaxValue; ten years is the same thing in practice.
+            $repeat = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) `
+                -RepetitionInterval (New-TimeSpan -Minutes $EveryMinutes) `
+                -RepetitionDuration (New-TimeSpan -Days 3650)
+            $trigger.Repetition = $repeat.Repetition
+            Write-Ok "Task checks every $EveryMinutes minutes; a stopped bot is started again"
+        } catch {
+            Write-Warn "Could not add the $EveryMinutes-minute check: $($_.Exception.Message)"
+            Write-Warn 'The task still starts at logon. After a clean stop, use: tg-secretary start'
+        }
+    }
+    return $trigger
+}
+
+
 # A Scheduled Task is the Windows equivalent of the systemd unit: start at logon,
 # restart when the process exits (which is how /update hands over to new code),
 # no time limit, no "only while on AC power" surprise.
@@ -549,6 +586,12 @@ rem Written by install.ps1 - regenerate rather than hand-edit.
 rem The bot's output goes to a file because Scheduled Tasks have no journal.
 cd /d "%~dp0.."
 if not exist "bot\state" mkdir "bot\state"
+rem "tg-secretary stop" drops this marker. The task checks every few minutes whether
+rem the bot is running, and it must not undo a stop you asked for.
+if exist "bot\state\stopped" (
+  echo %DATE% %TIME% not starting: stopped by hand>> "bot\state\bot.log"
+  exit /b 0
+)
 "$NodePath" --import ./bot/register.mjs bot/runner.mjs >> "bot\state\bot.log" 2>&1
 exit /b %errorlevel%
 "@
@@ -566,7 +609,7 @@ exit /b %errorlevel%
     Invoke-Step "register the Scheduled Task '$ServiceName'" {
         try {
             $action = New-ScheduledTaskAction -Execute $RunCmd -WorkingDirectory $Dir
-            $trigger = New-ScheduledTaskTrigger -AtLogOn -User "$env:USERDOMAIN\$env:USERNAME"
+            $trigger = New-BotTrigger "$env:USERDOMAIN\$env:USERNAME" 5
             $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
                 -StartWhenAvailable -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) `
                 -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew
@@ -580,7 +623,7 @@ exit /b %errorlevel%
             # A scriptblock runs in a child scope, so this has to be $script: or the
             # health check below would think no task was installed.
             $script:TaskInstalled = $true
-            Write-Ok "Task '$ServiceName' registered (starts at logon, restarts on exit)"
+            Write-Ok "Task '$ServiceName' registered (starts at logon, restarts on failure, checked every 5 minutes)"
         } catch {
             Write-Warn "Could not register the Scheduled Task: $($_.Exception.Message)"
             Write-Warn 'The bot is installed and can be started by hand; see the end of this output.'
@@ -658,9 +701,10 @@ if ($Model) {
                     $text = "@echo off`r`nrem Written by install.ps1`r`ncd /d `"%~dp0..`"`r`n" + $LlamaCmd.Replace('%', '%%') + " >> `"bot\state\llama.log`" 2>&1`r`n"
                     [System.IO.File]::WriteAllText($llamaCmdFile, $text, [System.Text.Encoding]::ASCII)
                     $a = New-ScheduledTaskAction -Execute $llamaCmdFile -WorkingDirectory $Dir
-                    $t = New-ScheduledTaskTrigger -AtLogOn -User "$env:USERDOMAIN\$env:USERNAME"
+                    $t = New-BotTrigger "$env:USERDOMAIN\$env:USERNAME" 5
                     $s = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable `
-                        -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) -ExecutionTimeLimit ([TimeSpan]::Zero)
+                        -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) -ExecutionTimeLimit ([TimeSpan]::Zero) `
+                        -MultipleInstances IgnoreNew
                     Register-ScheduledTask -TaskName $LlamaTask -Action $a -Trigger $t -Settings $s `
                         -Description 'llama.cpp server for the Telegram secretary' -Force | Out-Null
                     Start-ScheduledTask -TaskName $LlamaTask

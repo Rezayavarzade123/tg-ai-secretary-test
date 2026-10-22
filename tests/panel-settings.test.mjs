@@ -36,11 +36,15 @@ test('numbers are bounds-checked', () => {
   rejects('pause_hours', '999', /between 0 and 168/);
 });
 
-test('languages must exist in the registry', () => {
-  accepts('lang', 'fa');
-  accepts('lang', 'EN', 'EN');            // normalised later by isLanguage? no: store as given
-  rejects('lang', 'klingon', /Unknown language/);
-  rejects('lang', 'xx', /Unknown language/);
+test('any language is accepted, not only the ones in the registry', () => {
+  accepts('lang', 'fa', 'fa');
+  accepts('lang', 'EN', 'en');            // codes are lower-cased, region stripped
+  accepts('lang', 'Swedish', 'sv');       // a name the registry knows
+  accepts('lang', 'pt-BR', 'pt');         // a regional tag
+  accepts('lang', 'klingon', 'klingon');  // anything else is passed to the model as written
+  accepts('lang', 'tlh', 'tlh');
+  rejects('lang', '', /name or code/);    // still not a language setting
+  rejects('lang', 'a b c!', /name or code/);
 });
 
 test('enumerations are enforced', () => {

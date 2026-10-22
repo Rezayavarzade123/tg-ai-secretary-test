@@ -52,7 +52,7 @@ Nothing here is an LLM judging an LLM. Every check is code you can read in an af
 
 Same handlers, same schema, same prompts. The local runtime adds a **control panel** in the browser; Telegram gets `/lang`, `/mode` and inline-button approvals.
 
-> **Status: v1.7 — experimental.** 187 unit tests and 40 end-to-end checks pass, the panel has been audited ([21 findings, all fixed](docs/panel-audit.md)), and every path has been exercised against a fake Telegram and a fake model. It has **not** yet been run against a live Telegram account or a real 1.7B model in this repository. Connect your own bot first, in draft mode, and watch the first ten replies before you trust it.
+> **Status: v1.7 — experimental.** 214 unit tests and 48 end-to-end checks pass, the panel has been audited ([21 findings, all fixed](docs/panel-audit.md)), and every path has been exercised against a fake Telegram and a fake model. It has **not** yet been run against a live Telegram account or a real 1.7B model in this repository. Connect your own bot first, in draft mode, and watch the first ten replies before you trust it.
 
 ## What it does
 
@@ -86,6 +86,53 @@ Runs on every outgoing secretary reply, in draft and auto alike. It replaces the
 - is empty.
 
 Emergency-sounding messages never reach the model: they get a fixed instruction to call emergency services. The guard is re-applied when you press Send on a draft, so an edit can't smuggle a promise through.
+
+### Repeats, echoes, and the sentences that need no model
+
+A 1–2B model fails in ways that are not errors: it hands the message back, or brings back
+the same filler phrase it used last turn. On a real Windows box, a 1.7B model answered
+`سلام`, then `درست فارسی حرف بزن`, then `سیکنتر`, then `منو میشناسی؟` with four variations of
+the same sentence, twice echoing the message word for word.
+
+Two different answers to that (`tgcloud/lib/degenerate.js`, `tgcloud/lib/smalltalk.js`):
+
+- **Short social messages are answered from code.** Greetings, "who are you", "do you know
+  me", "thanks" — in English, Persian, Arabic, Spanish, French, German, Turkish and Russian.
+  Instant on a slow CPU, exact in the right language, and unable to repeat themselves. The
+  matcher is narrow: `سلام، میشه فردا جلسه بذاری؟` is a question and still goes to the model.
+  In a language this file cannot write well it deliberately returns nothing and lets the
+  model answer — a hand-written greeting nobody here can check would be worse than silence.
+- **Everything else is checked before it is sent.** An answer that is only the sender's words,
+  or the previous answer's phrase in new clothing, or the same sentence twice, is discarded:
+  one retry with a correcting system message at a higher temperature, and if that fails too,
+  a short honest sentence in place of a reply — which is not written into the conversation
+  history, so the loop cannot feed itself.
+- **In Secretary mode a repeating model says nothing at all**, and tells you instead. An
+  apology five times is better than a lie, but it is not a conversation; the person writing
+  to you gets silence, and the reason appears in your chat and the activity log. The probe is
+  exempt: it measures the model as it is, retries included.
+
+**Language is chosen per reply.** `detectLang()` only names a Latin language when two
+stop-words agree, so ordinary English (`Change your settings so you can`) came back null and
+fell through to the owner's default — a Persian-default bot answering English speakers in
+Persian, which a 1.7B model then rendered as *"I am an automated assistant and cannot talk in
+English"*. Two or more Latin words and no better evidence now means English; a single word
+(`ok`) still defers to the setting. In Secretary mode the sender's language is passed to the
+prompt as an instruction for that reply instead of the vague *"default: Persian"*.
+
+**Any language, not only the ones in the list.** The registry in `tgcloud/lib/lang.js` is a
+list of languages the app can *name* — it is not a whitelist. `/lang Swedish`, `/lang sv-SE`,
+`/lang pt-BR` and `/lang tlh` all set the setting (names become codes, regions are dropped),
+the panel's language field is free text with the known names as suggestions, and a language no
+table here has ever heard of is passed to the model as written. What the app itself cannot do
+for an unknown language is say its own short safety sentences in it, so those stay in English
+and the reply tells you so. Detection was widened to match: Thai, Bengali, Tamil, Telugu,
+Georgian, Hebrew, Urdu and the rest of the non-Latin scripts, plus stop-words for Swedish,
+Danish, Norwegian, Finnish, Polish, Czech, Romanian, Hungarian and Vietnamese. One more rule
+came out of it: when a Latin-script sentence gives no evidence either way, the owner's setting
+wins if it is itself a Latin-script language (a Swedish owner writing `Vi ses imorgon klockan
+tre` gets Swedish, not English); a non-Latin setting still yields English, which is the v1.7.4
+fix above.
 
 ### The probe gate (`tgcloud/lib/probe.js`)
 
@@ -133,7 +180,7 @@ A feature that learns from people can be turned into a permanent instruction by 
 - **Updates from GitHub**, opt-in by default: it checks on a schedule and tells you what is waiting, and installs only when you say so (or when you turn on auto-install, knowing it runs whatever is pushed). Fast-forward only, refuses a dirty or diverged checkout, and rolls back to the commit that ran before. See [Updating](#updating).
 
 **Language**
-- `/lang fa` fixes the reply language; `/lang auto on` follows whoever writes. Detection is local and dependency-free (script test + stop-words), so a small model can't drift into English halfway through.
+- `/lang fa` fixes the reply language, `/lang Swedish` or `/lang tlh` work just as well, and `/lang auto on` follows whoever writes. Detection is local and dependency-free (script test + stop-words), so a small model can't drift into English halfway through.
 - The language line is part of the prompt, not an afterthought, and a per-contact override wins over both.
 
 **Privacy**
@@ -315,7 +362,7 @@ Talk to the bot in your private chat. In groups, only `@you`-addressed commands 
 | `/probe [show]` | Run the eight adversarial cases, or show the last result |
 | `/drafts` | Re-send the pending approval cards |
 | `/send <name\|id> <text>` | Write to someone from your own account, now — the one path that skips the draft, because you asked for it |
-| `/lang`, `/lang <code>`, `/lang auto on\|off` | Reply language |
+| `/lang`, `/lang <any language>`, `/lang auto on\|off` | Reply language — a code, a name, or a tag |
 | `/secretary on\|off` | Master switch for secretary mode |
 | `/secretaryinfo <text>` | The only information the assistant may share |
 | `/delay <seconds>` | Wait after a person's last message (default 50, max 300) |
@@ -343,7 +390,7 @@ tg-ai-secretary/
 │  ├─ sdk/                        JSON store, query builder, Telegram client — the shim
 │  ├─ hardware.mjs                machine report → threads, flags, model
 │  ├─ updater.mjs                 check / fast-forward / roll back from the Git remote
-│  ├─ selftest.mjs                40 end-to-end checks, fake Telegram and model
+│  ├─ selftest.mjs                45 end-to-end checks, fake Telegram and model
 │  ├─ seed-demo.mjs               sample data for the panel
 │  └─ state/                      your data (git-ignored): bot.json, panel-token
 ├─ tgcloud/                    shared by both runtimes
@@ -356,6 +403,8 @@ tg-ai-secretary/
 │  │  └─ inline_query.js          @mention answers in any chat
 │  └─ lib/
 │     ├─ guard.js                 the deterministic safety net
+│     ├─ degenerate.js            echo, canned-loop and stutter detection
+│     ├─ smalltalk.js             greetings and identity, answered without a model
 │     ├─ probe.js                 the eight cases + the auto-mode gate
 │     ├─ brain.js                 prompts, memory, model call, metric per call
 │     ├─ memory.js                learning from people, and what it refuses to learn
@@ -374,7 +423,7 @@ tg-ai-secretary/
 ├─ install.sh / uninstall.sh   the Linux installer: checks, copies, settings, systemd
 ├─ install.ps1 / uninstall.ps1 the Windows installer: Scheduled Task, ACL, PATH
 ├─ bot/cli.mjs                 version + update, shared by both front ends
-├─ tests/                      22 files, run against a fake sdk
+├─ tests/                      24 files, run against a fake sdk
 └─ docs/                       install.md · windows.md · local.md · prompts.md · panel-audit.md · plan-local-ps4.md
 ```
 
@@ -385,8 +434,8 @@ tg-ai-secretary/
 ## Tests
 
 ```bash
-npm test            # 187 unit tests
-npm run selftest    # 40 end-to-end checks (fake Telegram + fake model)
+npm test            # 214 unit tests
+npm run selftest    # 48 end-to-end checks (fake Telegram + fake model)
 npm run hw          # machine report
 ```
 
@@ -418,6 +467,125 @@ What the numbers cover:
 - **Serverless quirk:** the Ollama key lives in the database there, because that runtime documents no secrets store. The local runtime reads it from `bot/.env` or the panel.
 
 ## Changelog
+
+### v1.7.5 — any language, not only the ones with a table
+
+The list of languages was doing two jobs: naming the languages the app can speak its own short
+sentences in, and deciding which languages you were allowed to choose. Only the first is honest.
+
+**Changed**
+- **The setting accepts any language.** `/lang`, the panel's settings page and its per-person
+  field all take a code (`sv`), a name (`Swedish`, `Svenska`, `فارسی`) or a tag (`sv-SE`,
+  `pt-BR`). Names resolve to codes, regions are dropped, and anything else — `tlh`, `Klingon` —
+  is stored as written and passed to the model as an instruction to reply in it.
+- **The panel's Reply-language select became a text field** with the known names offered as
+  suggestions (`<datalist>`), and it no longer drops a value it does not recognise on the floor.
+  Same for the per-person language field on the People tab.
+- **`/lang` with no argument** now says what actually works, and lists the languages the app can
+  translate its own safety sentences into rather than pretending that list is the limit.
+- **Detection covers far more.** Added Thai, Bengali, Punjabi, Gujarati, Tamil, Telugu, Kannada,
+  Malayalam, Sinhala, Burmese, Khmer, Georgian, Armenian and Ethiopic scripts; Urdu told apart
+  from Arabic by `ٹ ڈ ڑ ں ھ ے`, Ukrainian from Russian by `і ї є ґ`; stop-words for Swedish,
+  Danish, Norwegian, Finnish, Polish, Czech, Romanian, Hungarian and Vietnamese.
+- **A Latin-script setting is no longer overridden by the English fallback.** With `lang: sv`
+  and a sentence the detector cannot place, the reply is Swedish; a non-Latin setting still
+  gives English for a Latin message, which is the v1.7.4 fix.
+- **Smalltalk recognises greetings in far more languages** — `hola`, `bonjour`, `hallo`,
+  `merhaba`, `привет`, `שלום`, `नमस्ते`, `xin chào` and more — and answers in them where the
+  words exist (en, fa, ar, es, fr, de, tr, ru). The old rule still holds tightly: a greeting
+  wrapped around a real request goes to the model, so `سلام، میشه فردا جلسه بذاری؟` is still a
+  request. `سلام خوبی؟` now gets the "how are you" answer rather than the plain hello, and
+  `thanks, can you send the file?` is a favour, not a thank-you.
+- **The probe stopped failing a language it cannot detect.** With `lang: sv` and auto language
+  off, a correct Swedish reply used to be scored as English — and a failed probe locks auto
+  mode. A reply with no language evidence at all is now unscorable for a Latin-script setting
+  (it still counts as English against a Persian or Russian one, which is the drift that check
+  exists to catch).
+
+**Found while testing it, and fixed**
+- **A number passed as a language.** `{ lang: 42 }` from the panel was stored as the reply
+  language, because `"42"` satisfied the old input check. A language must now contain at least
+  two letters, so `42`, `a` and `12` are refused with a reason.
+- **A setting stored as a name silently lost its translations.** An install from 1.7.4 or
+  earlier can hold `Swedish` instead of `sv`; the prompt said "Swedish" (fine) but the guard's
+  fixed sentences and the repetition apology fell back to English. Settings is still read as
+  written, and everything that looks up a table now resolves the name first.
+- **`/contact <id> lang Bahasa Indonesia` stored `Bahasa`.** The command matched one word.
+  It now takes the rest of the line, and `Tiếng Việt` works too.
+- **`/status` died on a corrupted `secretary_conns`** setting (`JSON.parse` with no guard). It
+  now reports 0 connections and carries on.
+
+**Still English for unknown languages, on purpose**
+- The guard's fixed sentences, the repetition apology and the smalltalk replies exist in a
+  handful of languages (en, fa, ar, es, fr, de, tr, ru). For anything else they fall back to
+  English — a wrong-but-honest English sentence beats a machine translation nobody checked —
+  and the `/lang` reply tells you that this is what will happen.
+- The smalltalk matcher returns `null` for a language it cannot write, so the model answers.
+  It recognises greetings in many languages but only answers from code where the words exist.
+
+### v1.7.4 — a stranger got the same apology five times
+
+A transcript from Secretary mode: an English-speaking contact (`Hello talk English`,
+`Change your settings so you can`, `He'll be awaiting for you`) got, five times,
+
+> I am an automated assistant and cannot talk in English. Please let me know what you need.
+
+Both halves of that are now fixed.
+
+**Fixed**
+- **A language with no evidence fell back to the owner's default.** `detectLang()` needs two
+  stop-words for a Latin language, so plain English came back null, and a Persian-default bot
+  answered in Persian — which the model turned into "cannot talk in English". Two or more
+  Latin words now resolve to English; one word still defers to the setting.
+- **The Secretary prompt got a vague language hint** (`reply in their language, default:
+  Persian`). The sender's detected language is passed as an explicit instruction for that
+  reply, which a 1.7B model follows far more reliably.
+- **A repeating reply reached a stranger.** The repeat detection ran only when history was
+  being written, which Secretary mode does not do — so it never ran there. It now runs for
+  every reply, and in Secretary mode two failures mean **silence to the contact** plus a note
+  to the owner, instead of the same apology five times. The probe opts out on purpose.
+
+### v1.7.3 — the model was repeating itself, so some answers come from code
+
+A real transcript: `سلام` → `سلام! 😊 ما روی از چی؟`, then the same sentence for
+`درست فارسی حرف بزن`, `سیکنتر` and `منو میشناسی؟` — echoing the message and recycling one
+phrase. Diagnosis, not tuning: a 1.7B model cannot be prompted out of this.
+
+**New**
+- **`tgcloud/lib/smalltalk.js`** answers greetings, "who are you", "do you know me" and
+  "thanks" from code, in English, Persian and Arabic — no model call, no waiting, no way to
+  repeat itself. A greeting wrapped around a real question is left to the model.
+- **`tgcloud/lib/degenerate.js`** checks every reply before it is sent: an echo of the
+  message, a phrase that came back from the previous turn, or the same sentence twice. One
+  retry follows at a higher temperature with an explicit correction; if that fails, a short
+  honest sentence is sent instead and kept out of the history, so the loop cannot feed itself.
+- The bot's prompt now says, in as many words, not to repeat the owner's message back at them.
+
+**Note** the retry costs a second model call, but only for a reply that was going to be
+unusable anyway.
+
+### v1.7.2 — the command now controls what it says it does
+
+Three things a real Windows session exposed, all about telling the truth:
+
+**Fixed**
+- **`tg-secretary` from a checkout silently controlled the installed copy.**
+  `$MyInvocation.MyCommand.Path` is empty inside a function, so "the directory this script
+  lives in" never matched and discovery fell through to `%LOCALAPPDATA%`. It is
+  `$PSCommandPath` now, and when both copies exist the installed one still wins — it is the
+  one that is running — but `status` says which checkout the command came from, and `-Dir`
+  switches.
+- **`task Ready`, `bot not running`.** The trigger was *at logon*, and the task was
+  registered after the user had signed in, so it waited for the next sign-in. The task now
+  also checks every 5 minutes: a stopped bot is started again, a running one is left alone
+  (`-MultipleInstances IgnoreNew`). PowerShell 5.1 cannot put a repetition on a logon
+  trigger, so it is borrowed from a `-Once` trigger, in a `try` that falls back to the
+  logon-only behaviour it had before.
+- **`stop` had to survive that check**, or it would have lasted five minutes. `stop` leaves
+  `bot\state\stopped`, `bin\run-bot.cmd` refuses to start while it exists, and `start` and
+  `restart` clear it.
+- **`paths` now answers "why is the command not found"** — it names the file, and separates
+  *on your saved PATH* from *on this window's PATH*.
 
 ### v1.7.1 — the safety net had a 50% hit rate
 

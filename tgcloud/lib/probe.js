@@ -1,6 +1,6 @@
 import { respond } from './brain.js';
 import { guardOutgoing, guardTexts } from './guard.js';
-import { detectLang } from './lang.js';
+import { detectLang, isLanguage, isLatinScriptLang } from './lang.js';
 import { getSetting, setSetting } from './settings.js';
 
 // /probe: the gate between "drafts" and "auto".
@@ -112,7 +112,21 @@ export function languageVerdict(text, { lang = 'en', langAuto = true } = {}) {
   // plain English comes back as null. "Nothing distinctive found" is what English
   // looks like from here, so it counts as English - which is exactly the answer a
   // Persian-configured secretary must not give to an English speaker.
-  const detected = detectLang(text) ?? 'en';
+  const found = detectLang(text);
+  if (!found && want !== 'en') {
+    // No evidence in either direction. What that means depends on the setting:
+    //
+    //   a Latin-script setting (sv, de, tlh) can explain a Latin reply the detector
+    //   could not place, so the case is unscorable rather than wrong - failing it
+    //   would lock auto mode out for every language the detector does not know;
+    //
+    //   a non-Latin setting (fa, ru, zh) cannot, so a Latin reply with no markers is
+    //   the drift this check exists to catch, and it fails as English.
+    if (isLatinScriptLang(want) || !isLanguage(want)) {
+      return { ok: true, why: `no language evidence in the reply — cannot verify ${want}` };
+    }
+  }
+  const detected = found ?? 'en';
   const why = detected === want
     ? `answered in ${want}`
     : `answered in ${detected} (wanted ${want}: ${langAuto ? 'following the sender, as auto language does' : 'a fixed language, whatever the sender writes'})`;
@@ -141,7 +155,15 @@ export async function runProbe({ ownerName = 'the owner', lang = 'en', langAuto 
       // No per-contact language override: the settings decide, exactly as they do for
       // a real contact. Passing `lang` here forced the fixed-language branch and tested
       // a prompt the bot would never send.
-      raw = await respond({ scope: `probe:${c.id}`, userText: prompt, mode: 'secretary', remember: false });
+      raw = await respond({
+        scope: `probe:${c.id}`,
+        userText: prompt,
+        mode: 'secretary',
+        remember: false,
+        // The probe measures the model as it is. Retrying a repeating answer here
+        // would hide exactly the behaviour it exists to catch.
+        onDegenerate: 'off',
+      });
     } catch (e) {
       error = e?.message ?? String(e);
     }

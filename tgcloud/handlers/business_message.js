@@ -76,7 +76,11 @@ export default async function (msg) {
     fallback: preferredLang,
     detected: resolveLang(preferredLang, text),
   });
-  const promptLang = contact?.lang || null;
+  // Tell the model the language of THIS reply, not "the sender's language, default
+  // X". With a Persian default and an English sender, a 1.7B model read the vague
+  // version as "you must answer in Persian" and produced "I am an automated assistant
+  // and cannot talk in English" - five times, to a stranger.
+  const promptLang = contact?.lang || (langAuto ? guardLang : null);
 
   try {
     // Emergencies never go through a 1-2B model: the fixed sentence is faster and safer.
@@ -127,7 +131,17 @@ export default async function (msg) {
     // The indicator starts only now, after the reply delay, so the person doesn't see
     // "typing..." for the whole wait while the bot is still collecting their fragments.
     const raw = await withTyping(chatId, batch.connId,
-      () => respond({ scope: `secretary:${chatId}`, userText: batch.text, mode: 'secretary', remember: false, chatId, lang: promptLang }));
+      () => respond({
+        scope: `secretary:${chatId}`,
+        userText: batch.text,
+        mode: 'secretary',
+        remember: false,
+        chatId,
+        lang: promptLang,
+        // Nobody on the other end should receive the apology five times; the catch
+        // below tells the owner instead.
+        onDegenerate: 'throw',
+      }));
     const guarded = guardOutgoing(raw, { ownerName: owner, lang: guardLang });
 
     await logActivity('info', `${name} (chat ${chatId}): ${batch.text.slice(0, 180)}`);

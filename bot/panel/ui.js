@@ -390,7 +390,9 @@ function viewSecretary() {
   const st = S.state;
   const s = st.settings || {};
   const mode = s.secretary_mode || 'draft';
-  const lang = st.languages.find((l) => l.code === (s.lang || 'en')) || st.languages[0];
+  const langCode = s.lang || 'en';
+  const known = st.languages.find((l) => l.code === langCode);
+  const lang = known || { code: langCode, native: langCode, label: langCode };
   const auto = (s.lang_auto || 'on') !== 'off';
   const delay = Number(s.delay_seconds ?? 50);
   const pause = Number(s.pause_hours ?? 4);
@@ -426,8 +428,19 @@ function viewSecretary() {
       <div class="field">
         <label for="langSel">Reply language</label>
         <select id="langSel">
+          ${known ? '' : `<option value="${esc(langCode)}" selected>${esc(langCode)} — not in the list</option>`}
           ${st.languages.map((l) => `<option value="${l.code}"${l.code === lang.code ? ' selected' : ''}>${esc(`${l.native} — ${l.label} (${l.code})`)}</option>`).join('')}
         </select>
+        <p class="hint small" style="margin:6px 0 0">The list is a convenience, not a limit — the model can be asked for any language.</p>
+      </div>
+      <div class="field">
+        <label for="langAny">Or type any language</label>
+        <div class="row">
+          <input id="langAny" class="grow" type="text" dir="auto" autocomplete="off" spellcheck="false"
+                 placeholder="e.g. Swedish, pt-BR, 日本語" value="${known ? '' : esc(langCode)}" maxlength="40">
+          <button type="button" class="primary" id="langAnySave">Use</button>
+        </div>
+        <p class="hint small" style="margin:6px 0 0">A name, a code, or anything the model recognises. The app's own short safety sentences stay in English until a translation exists.</p>
       </div>
       <div class="row" style="justify-content:space-between;margin-bottom:4px">
         <div>
@@ -507,7 +520,10 @@ function viewPeople() {
   return `
   <div class="card" style="margin-bottom:14px">
     <h2>People</h2>
-    <p class="hint">Everyone who has written to your account. <strong>Context</strong> is added to the prompt for that chat only — tell it who they are. <strong>Language</strong> overrides the global setting for one person. <strong>Blocked</strong> means the bot ignores them entirely.</p>
+    <p class="hint">Everyone who has written to your account. <strong>Context</strong> is added to the prompt for that chat only — tell it who they are. <strong>Language</strong> overrides the global setting for one person — type a name or a code, or leave it empty to follow the rules. <strong>Blocked</strong> means the bot ignores them entirely.</p>
+    <datalist id="langList">
+      ${(st.languages || []).map((l) => `<option value="${esc(l.code)}">${esc(`${l.native} — ${l.label}`)}</option>`).join('')}
+    </datalist>
     <div class="row" style="justify-content:space-between">
       <div>
         <div>Learn from conversations</div>
@@ -532,12 +548,10 @@ function viewPeople() {
           <label for="notes-${c.chatId}">Context (max 400 characters)</label>
           <textarea id="notes-${c.chatId}" rows="2" dir="auto" placeholder="e.g. Sara is my sister, she knows about the trip">${esc(c.notes || '')}</textarea>
         </div>
-        <div style="width:170px">
+        <div style="width:190px">
           <label for="lang-${c.chatId}">Language</label>
-          <select id="lang-${c.chatId}">
-            <option value=""${!c.lang ? ' selected' : ''}>follow the rules</option>
-            ${st.languages.map((l) => `<option value="${l.code}"${c.lang === l.code ? ' selected' : ''}>${esc(l.native)}</option>`).join('')}
-          </select>
+          <input id="lang-${c.chatId}" list="langList" type="text" dir="auto" autocomplete="off" spellcheck="false"
+                 maxlength="40" placeholder="follow the rules" value="${esc(c.lang || '')}">
         </div>
       </div>
       ${(c.facts && c.facts.length) ? `
@@ -1034,6 +1048,18 @@ function wire() {
 
   const langSel = $('#langSel');
   if (langSel) langSel.onchange = () => saveSettings({ lang: langSel.value }, 'Language saved').catch((e) => toast(e.message, true));
+
+  const langAny = $('#langAny');
+  const langAnySave = $('#langAnySave');
+  if (langAny && langAnySave) {
+    const applyAny = () => {
+      const v = langAny.value.trim();
+      if (!v) { toast('Type a language first', true); return; }
+      saveSettings({ lang: v }, `Reply language: ${v}`).catch((e) => toast(e.message, true));
+    };
+    langAnySave.onclick = applyAny;
+    langAny.onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); applyAny(); } };
+  }
 
   bindToggle('langAuto', (on) => saveSettings({ lang_auto: on ? 'on' : 'off' }, `Language following ${on ? 'on' : 'off'}`));
   bindToggle('notifySw', (on) => saveSettings({ notify: on ? 'on' : 'off' }, `Notifications ${on ? 'on' : 'off'}`));
