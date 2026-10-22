@@ -9,7 +9,7 @@ const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'secretary-db-'));
 process.env.BOT_STATE_DIR = dir;
 
 const { db, table, integer, text, boolean, index, eq, and, lte, asc, desc } = await import('../bot/sdk/db.mjs');
-const { load, save, stats } = await import('../bot/sdk/store.mjs');
+const { load, save, stats, acquireLock, releaseLock } = await import('../bot/sdk/store.mjs');
 
 load();
 
@@ -77,4 +77,19 @@ test('everything is persisted, so a restart keeps the data', async () => {
   assert.equal(parsed.tables.notes.length, 2);
   assert.equal(parsed.tables.chats[0].chatId, 5);
   assert.ok(stats().bytes > 0);
+});
+
+test('a second bot cannot share the state directory', async () => {
+  const fs2 = await import('node:fs');
+  const path2 = await import('node:path');
+
+  // Pretend another (live) process holds the lock. pid 1 exists and is not us.
+  fs2.writeFileSync(path2.join(dir, 'bot.lock'), JSON.stringify({ pid: 1, at: Date.now() }));
+  assert.throws(() => acquireLock(), /Another bot is already running/);
+
+  // A stale lock (dead pid) is taken over instead.
+  fs2.writeFileSync(path2.join(dir, 'bot.lock'), JSON.stringify({ pid: 999999, at: Date.now() }));
+  assert.ok(acquireLock().endsWith('bot.lock'));
+  releaseLock();
+  assert.equal(fs2.existsSync(path2.join(dir, 'bot.lock')), false);
 });

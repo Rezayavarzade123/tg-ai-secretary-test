@@ -17,6 +17,13 @@ let data = { version: 1, tables: {} };
 let loaded = false;
 let writeTimer = null;
 
+// The whole file is rewritten on every change, which makes two writers dangerous:
+// the second one silently resurrects its own (older) copy of everything. Track
+// what we last wrote so we can at least say so, and take a lock so two bots cannot
+// share a state directory by accident.
+let lastWritten = { mtimeMs: 0, size: 0 };
+let externalChange = null;
+
 export function getStateFile() {
   return stateFile;
 }
@@ -38,6 +45,10 @@ export function load() {
   data.tables ??= {};
   data.version ??= 1;
   loaded = true;
+  try {
+    const st = fs.statSync(stateFile);
+    lastWritten = { mtimeMs: st.mtimeMs, size: st.size };
+  } catch { /* not written yet */ }
   return data;
 }
 
@@ -58,9 +69,25 @@ export function save({ immediate = true } = {}) {
     return;
   }
   fs.mkdirSync(path.dirname(stateFile), { recursive: true });
+
+  // Did something else touch the file since our last write?
+  try {
+    const st = fs.statSync(stateFile);
+    if (lastWritten.mtimeMs && st.mtimeMs > lastWritten.mtimeMs + 5) {
+      if (!externalChange || externalChange.mtimeMs !== st.mtimeMs) {
+        externalChange = { mtimeMs: st.mtimeMs, at: Date.now() };
+        console.warn(`⚠️  ${stateFile} was changed by another process. This copy of the bot is now overwriting it.`);
+      }
+    }
+  } catch { /* first write */ }
+
   const tmp = `${stateFile}.tmp`;
   fs.writeFileSync(tmp, JSON.stringify(data, null, 1));
   fs.renameSync(tmp, stateFile);
+  try {
+    const st = fs.statSync(stateFile);
+    lastWritten = { mtimeMs: st.mtimeMs, size: st.size };
+  } catch { /* ignore */ }
 }
 
 // Keep the last N snapshots next to the state file.
@@ -83,11 +110,68 @@ export function backup(keep = 14) {
   }
 }
 
+export function externalWrite() {
+  return externalChange;
+}
+
+// --- one bot per state directory -------------------------------------------------
+function lockFile() {
+  return path.join(path.dirname(stateFile), 'bot.lock');
+}
+
+function pidAlive(pid) {
+  if (!pid || pid === process.pid) return pid === process.pid;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    return e.code === 'EPERM';
+  }
+}
+
+// Refuse to start a second copy on the same data: two pollers on one bot token
+// fight over getUpdates (409), and two writers clobber each other's state.
+export function acquireLock() {
+  const file = lockFile();
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  try {
+    const existing = JSON.parse(fs.readFileSync(file, 'utf8'));
+    if (existing?.pid && existing.pid !== process.pid && pidAlive(existing.pid)) {
+      const err = new Error(
+        `Another bot is already running on ${stateFile} (pid ${existing.pid}, since ${new Date(existing.at).toLocaleString()}).\n` +
+        'Stop it first, or use a different BOT_STATE_DIR.'
+      );
+      err.code = 'LOCKED';
+      throw err;
+    }
+  } catch (e) {
+    if (e.code === 'LOCKED') throw e;
+    // No lock file (or an unreadable one): take it over.
+  }
+  fs.writeFileSync(file, JSON.stringify({ pid: process.pid, at: Date.now(), stateFile }));
+  return file;
+}
+
+export function releaseLock() {
+  try {
+    const existing = JSON.parse(fs.readFileSync(lockFile(), 'utf8'));
+    if (existing?.pid === process.pid) fs.rmSync(lockFile(), { force: true });
+  } catch { /* nothing to release */ }
+}
+
+export function lockInfo() {
+  try {
+    return JSON.parse(fs.readFileSync(lockFile(), 'utf8'));
+  } catch {
+    return null;
+  }
+}
+
 export function stats() {
   const d = load();
   const counts = {};
   for (const [name, rows] of Object.entries(d.tables)) counts[name] = rows.length;
   let bytes = 0;
   try { bytes = fs.statSync(stateFile).size; } catch { /* not written yet */ }
-  return { file: stateFile, bytes, counts };
+  return { file: stateFile, bytes, counts, externalChange };
 }

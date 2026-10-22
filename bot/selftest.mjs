@@ -41,7 +41,13 @@ globalThis.fetch = async (url, options = {}) => {
 
   if (u.includes('api.telegram.org')) {
     const method = u.slice(u.lastIndexOf('/') + 1);
-    if (method === 'getMe') return tg({ id: 42, username: 'selftest_bot', first_name: 'Secretary' });
+    if (method === 'getMe') {
+      // A token Telegram would reject: the panel must not store it.
+      if (u.includes('BOGUSTOKEN')) {
+        return new Response(JSON.stringify({ ok: false, description: 'Unauthorized' }), { status: 401, headers: { 'Content-Type': 'application/json' } });
+      }
+      return tg({ id: 42, username: 'selftest_bot', first_name: 'Secretary' });
+    }
     if (method === 'getBusinessConnection') {
       return tg({ id: body.business_connection_id, user: { id: OWNER }, is_enabled: true, rights: { can_reply: true } });
     }
@@ -279,48 +285,214 @@ await check('a stranger writing to the bot directly is ignored', async () => {
   assert.equal(sent.length, before, 'no reply, no model call');
 });
 
-await check('the control panel answers with live state', async () => {
+await check('the control panel answers with live state, and never leaks its token', async () => {
   const { startPanel } = await import('./panel/server.mjs');
   const server = await startPanel({ port: 0, host: '127.0.0.1', lanAddress: '127.0.0.1' });
   const port = server.address().port;
+  const base = `http://127.0.0.1:${port}`;
+  const AUTH = { Authorization: 'Bearer selftest-token' };
 
-  const unauth = await realFetch(`http://127.0.0.1:${port}/api/state`);
+  const unauth = await realFetch(`${base}/api/state`);
   assert.equal(unauth.status, 401, 'no token, no data');
+  assert.equal((await realFetch(`${base}/api/ping`).then((r) => r.json())).needsAuth, true);
 
-  const ping = await (await realFetch(`http://127.0.0.1:${port}/api/ping`)).json();
-  assert.equal(ping.needsAuth, true);
-
-  const stateRes = await realFetch(`http://127.0.0.1:${port}/api/state`, {
-    headers: { Authorization: 'Bearer selftest-token' },
-  });
+  const stateRes = await realFetch(`${base}/api/state`, { headers: AUTH });
   assert.equal(stateRes.status, 200);
   const state = await stateRes.json();
   assert.equal(state.owner.id, OWNER);
   assert.equal(state.bot.username, 'selftest_bot');
   assert.ok(state.draftsPending >= 1, 'the panel sees the waiting draft');
+  assert.ok(!JSON.stringify(state).includes('selftest-token'), 'the panel token is never sent back to the page');
+  assert.ok(state.panel.url && !state.panel.url.includes('token='), 'only the public URL is shared');
 
-  // Settings written by the panel are the same rows the handlers read.
-  const saveRes = await realFetch(`http://127.0.0.1:${port}/api/settings`, {
+  // Security headers on both the page and the API.
+  for (const path of ['/', '/api/state', '/ui.js', '/ui.css']) {
+    const r = await realFetch(base + path, { headers: AUTH });
+    assert.equal(r.status, 200, `${path} should be served`);
+    assert.equal(r.headers.get('x-frame-options'), 'DENY');
+    assert.equal(r.headers.get('x-content-type-options'), 'nosniff');
+    assert.match(r.headers.get('content-security-policy') || '', /frame-ancestors 'none'/);
+    assert.match(r.headers.get('content-security-policy') || '', /script-src 'self'/);
+    assert.equal(r.headers.get('referrer-policy'), 'no-referrer');
+  }
+  const html = await (await realFetch(`${base}/`, { headers: AUTH })).text();
+  assert.match(html, /control panel/i);
+  assert.ok(!/<script>[^<]/.test(html), 'no inline script (the CSP forbids it)');
+  assert.ok(!/\son[a-z]+="/i.test(html), 'no inline event handlers (the CSP forbids them)');
+
+  // A multi-field save is all-or-nothing.
+  const before = await (await realFetch(`${base}/api/settings`, { headers: AUTH })).json();
+  const mixed = await realFetch(`${base}/api/settings`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: 'Bearer selftest-token' },
-    body: JSON.stringify({ settings: { delay_seconds: 25, lang: 'fa' } }),
+    headers: { ...AUTH, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ settings: { delay_seconds: '37', lang: 'klingon' } }),
   });
-  assert.equal(saveRes.status, 200);
+  assert.equal(mixed.status, 400);
+  const afterBad = await (await realFetch(`${base}/api/settings`, { headers: AUTH })).json();
+  assert.equal(afterBad.settings.delay_seconds, before.settings.delay_seconds, 'the valid half was NOT applied');
+
+  const good = await realFetch(`${base}/api/settings`, {
+    method: 'POST',
+    headers: { ...AUTH, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ settings: { delay_seconds: '25', lang: 'fa' } }),
+  });
+  assert.equal(good.status, 200);
   assert.equal(await getSetting('delay_seconds'), '25');
   assert.equal(await getSetting('lang'), 'fa');
 
-  // A rejected setting leaves the old value alone.
-  const badRes = await realFetch(`http://127.0.0.1:${port}/api/settings`, {
+  // A missing value is refused instead of becoming 0.
+  const noValue = await realFetch(`${base}/api/settings`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: 'Bearer selftest-token' },
-    body: JSON.stringify({ settings: { lang: 'klingon' } }),
+    headers: { ...AUTH, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ key: 'delay_seconds' }),
   });
-  assert.equal(badRes.status, 400, 'a bad value is a client error, not a crash');
-  assert.equal(await getSetting('lang'), 'fa');
+  assert.equal(noValue.status, 400);
+  assert.equal(await getSetting('delay_seconds'), '25', 'delay untouched');
 
-  const page = await (await realFetch(`http://127.0.0.1:${port}/`)).text();
-  assert.match(page, /control panel/i);
+  // A token Telegram rejects must not replace the working one.
+  const badToken = await realFetch(`${base}/api/settings`, {
+    method: 'POST',
+    headers: { ...AUTH, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ settings: { bot_token: '123456789:BOGUSTOKEN-abcdefghijklmnop' } }),
+  });
+  assert.equal(badToken.status, 400);
+  assert.match((await badToken.json()).error, /rejected that token/i);
+  assert.equal(process.env.BOT_TOKEN, '123456:TEST-TOKEN-NOT-REAL', 'the working token was kept');
 
+  // Cross-origin writes are refused.
+  const cross = await realFetch(`${base}/api/settings`, {
+    method: 'POST',
+    headers: { ...AUTH, 'Content-Type': 'application/json', Origin: 'http://evil.example' },
+    body: JSON.stringify({ settings: { lang: 'en' } }),
+  });
+  assert.equal(cross.status, 403);
+
+  await new Promise((resolve) => server.close(resolve));
+});
+
+await check('drafts: 404 when missing, 409 once resolved, and the record cannot be rewritten', async () => {
+  const { listDrafts } = await import('../tgcloud/lib/drafts.js');
+  const sent = await listDrafts({ status: 'sent' });
+  const pending = await listDrafts({ status: 'pending' });
+  assert.ok(sent.length >= 1 && pending.length >= 1, 'the earlier checks left both kinds');
+
+  const { startPanel } = await import('./panel/server.mjs');
+  const server = await startPanel({ port: 0, host: '127.0.0.1', lanAddress: '127.0.0.1' });
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const H = { Authorization: 'Bearer selftest-token', 'Content-Type': 'application/json' };
+
+  const missing = await realFetch(`${base}/api/drafts/999999/send`, { method: 'POST', headers: H, body: '{}' });
+  assert.equal(missing.status, 404, 'a missing draft is a 404, not a crash');
+
+  const resend = await realFetch(`${base}/api/drafts/${sent[0].id}/send`, { method: 'POST', headers: H, body: '{}' });
+  assert.equal(resend.status, 409, 'a sent draft cannot be sent again');
+
+  const rewrite = await realFetch(`${base}/api/drafts/${sent[0].id}`, { method: 'PUT', headers: H, body: JSON.stringify({ text: 'rewriting history' }) });
+  assert.equal(rewrite.status, 409, 'a sent draft is a record, not a draft');
+  assert.notEqual((await getDraft(sent[0].id)).answer, 'rewriting history');
+
+  const edit = await realFetch(`${base}/api/drafts/${pending[0].id}`, { method: 'PUT', headers: H, body: JSON.stringify({ text: 'edited but not sent' }) });
+  assert.equal(edit.status, 200);
+  assert.equal((await getDraft(pending[0].id)).answer, 'edited but not sent');
+
+  const badStatus = await realFetch(`${base}/api/drafts?status=nope`, { headers: H });
+  assert.equal(badStatus.status, 400);
+
+  await new Promise((resolve) => server.close(resolve));
+});
+
+await check('sending from the panel also updates the Telegram card', async () => {
+  const { saveDraft, notifyOwner } = await import('../tgcloud/lib/drafts.js');
+  const { startPanel } = await import('./panel/server.mjs');
+  const { listDrafts } = await import('../tgcloud/lib/drafts.js');
+
+  const draft = await saveDraft({
+    chatId: 2468, connId: 'conn-1', name: 'CardTest',
+    incoming: 'is this thing on?', answer: 'Yes — automated assistant here.', lang: 'en',
+  });
+  await notifyOwner(draft);
+  const stored = await getDraft(draft.id);
+  assert.ok(stored.ownerMsgId, 'the card was sent');
+
+  const editsBefore = edited.length;
+  const server = await startPanel({ port: 0, host: '127.0.0.1', lanAddress: '127.0.0.1' });
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const r = await realFetch(`${base}/api/drafts/${draft.id}/send`, {
+    method: 'POST',
+    headers: { Authorization: 'Bearer selftest-token', 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text: 'Sending this from the browser instead.' }),
+  });
+  assert.equal(r.status, 200);
+  const sentNow = await getDraft(draft.id);
+  assert.equal(sentNow.status, 'sent');
+  assert.equal(sentNow.sentText, 'Sending this from the browser instead.');
+  assert.ok(sentNow.resolved > 0, 'the draft is stamped as resolved');
+
+  const cardEdits = edited.slice(editsBefore).filter((e) => e.message_id === stored.ownerMsgId);
+  assert.equal(cardEdits.length, 1, 'the Telegram card was rewritten');
+  assert.match(cardEdits[0].text, /SENT/);
+  await new Promise((resolve) => server.close(resolve));
+});
+
+await check('notes created in the panel carry a timestamp', async () => {
+  const { startPanel } = await import('./panel/server.mjs');
+  const server = await startPanel({ port: 0, host: '127.0.0.1', lanAddress: '127.0.0.1' });
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const H = { Authorization: 'Bearer selftest-token', 'Content-Type': 'application/json' };
+  const created = await (await realFetch(`${base}/api/notes`, { method: 'POST', headers: H, body: JSON.stringify({ text: 'from the panel' }) })).json();
+  assert.ok(created.note.created > 0, 'the UI shows "never" without this');
+  assert.ok(Math.abs(Date.now() / 1000 - created.note.created) < 60);
+  await new Promise((resolve) => server.close(resolve));
+});
+
+await check('a Telegram failure from the panel is a 502, not a 400', async () => {
+  const { saveDraft } = await import('../tgcloud/lib/drafts.js');
+  const { startPanel } = await import('./panel/server.mjs');
+  const draft = await saveDraft({ chatId: 1357, connId: 'gone', name: 'Dead', incoming: 'x', answer: 'y', lang: 'en' });
+
+  // Make the next sendMessage fail the way Telegram does for a dead connection.
+  const prior = globalThis.fetch;
+  globalThis.fetch = async (url, opts) => {
+    if (String(url).includes('api.telegram.org') && String(url).endsWith('/sendMessage') && JSON.parse(opts.body).chat_id === 1357) {
+      return new Response(JSON.stringify({ ok: false, description: 'Bad Request: business connection not found' }), { status: 400 });
+    }
+    return prior(url, opts);
+  };
+
+  const server = await startPanel({ port: 0, host: '127.0.0.1', lanAddress: '127.0.0.1' });
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const r = await realFetch(`${base}/api/drafts/${draft.id}/send`, {
+    method: 'POST',
+    headers: { Authorization: 'Bearer selftest-token', 'Content-Type': 'application/json' },
+    body: JSON.stringify({}),
+  });
+  globalThis.fetch = prior;
+  assert.equal(r.status, 502, 'upstream failure, not a client mistake');
+  assert.match((await r.json()).error, /business connection not found/);
+  assert.equal((await getDraft(draft.id)).status, 'pending', 'the draft survived a failed send');
+  await new Promise((resolve) => server.close(resolve));
+});
+
+await check('login is throttled after repeated wrong tokens', async () => {
+  const { startPanel } = await import('./panel/server.mjs');
+  const server = await startPanel({ port: 0, host: '127.0.0.1', lanAddress: '127.0.0.1' });
+  const base = `http://127.0.0.1:${server.address().port}`;
+  let last = 0;
+  for (let i = 0; i < 10; i++) {
+    const r = await realFetch(`${base}/api/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token: `wrong-${i}` }),
+    });
+    last = r.status;
+  }
+  assert.equal(last, 429, 'brute force gets locked out');
+  const ok = await realFetch(`${base}/api/login`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ token: 'selftest-token' }),
+  });
+  assert.equal(ok.status, 429, 'even the right token waits out the lockout');
   await new Promise((resolve) => server.close(resolve));
 });
 

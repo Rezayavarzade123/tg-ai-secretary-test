@@ -2,6 +2,7 @@ import { db, api } from 'sdk';
 import { eq, desc } from 'sdk/db';
 import { drafts } from '../schema.js';
 import { ownerId } from './owner.js';
+import { getSetting } from './settings.js';
 import { say } from './telegram.js';
 import { logActivity } from './activity.js';
 import { guardOutgoing } from './guard.js';
@@ -10,27 +11,15 @@ import { language, languagePromptName } from './lang.js';
 
 // Draft mode: the bot writes the reply, you approve it.
 //
-// The draft lives in the database, so it can be approved from the Telegram card
-// OR from the control panel — both call the same functions. Every send goes
-// through here, which is also where the last safety check happens.
+// A draft lives in the database, so it can be approved from the Telegram card OR
+// from the control panel — both call the same functions here. Two consequences
+// that are easy to get wrong:
+//   * every action must update the Telegram card as well, otherwise the card you
+//     look at in Telegram disagrees with what actually happened;
+//   * a draft that is no longer pending is a record, not a draft: it must not be
+//     edited, resent or silently rewritten.
 
 const nowSec = () => Math.floor(Date.now() / 1000);
-
-export async function saveDraft({ chatId, connId, name, incoming, answer, reasons = [], lang = 'en' }) {
-  const [row] = await db.insert(drafts).values({
-    chatId,
-    connId,
-    name: name ?? 'Unknown',
-    incoming,
-    answer,
-    lang,
-    guard: JSON.stringify(reasons),
-    status: 'pending',
-    created: nowSec(),
-  }).returning().run();
-  await logActivity('draft', `Draft for ${name} (chat ${chatId})${reasons.length ? ` — guards: ${reasons.join(', ')}` : ''}`);
-  return row;
-}
 
 export async function countPendingDrafts() {
   const rows = await db.select({ id: drafts.id }).from(drafts).where(eq(drafts.status, 'pending')).all();
@@ -47,18 +36,20 @@ export async function listDrafts({ status = 'pending', limit = 20 } = {}) {
   return q.orderBy(desc(drafts.id)).limit(limit).all();
 }
 
-export async function updateDraftText(id, text, { reasons = [] } = {}) {
-  await db.insert(drafts)
-    .values({ id: Number(id), answer: text, guard: JSON.stringify(reasons) })
-    .onConflictDoUpdate({ target: drafts.id, set: { answer: text, guard: JSON.stringify(reasons) } })
-    .run();
-  const d = await getDraft(id);
-  if (d?.ownerMsgId) {
-    try {
-      await api.editMessageText({ chat_id: await ownerId(), message_id: d.ownerMsgId, text: cardText(d), reply_markup: keyboard(d.id) });
-    } catch { /* the card may be too old to edit; the panel still has it */ }
-  }
-  return d;
+export async function saveDraft({ chatId, connId, name, incoming, answer, reasons = [], lang = 'en' }) {
+  const [row] = await db.insert(drafts).values({
+    chatId,
+    connId,
+    name: name ?? 'Unknown',
+    incoming,
+    answer,
+    lang,
+    guard: JSON.stringify(reasons),
+    status: 'pending',
+    created: nowSec(),
+  }).returning().run();
+  await logActivity('draft', `Draft for ${name} (chat ${chatId})${reasons.length ? ` — guards: ${reasons.join(', ')}` : ''}`);
+  return row;
 }
 
 // --- the card in your Telegram chat --------------------------------------------
@@ -92,17 +83,31 @@ function keyboard(id) {
   };
 }
 
+// Bring the Telegram card in line with the database after any change.
+async function refreshCard(id) {
+  const d = await getDraft(id);
+  if (!d?.ownerMsgId) return;
+  const owner = await ownerId();
+  if (!owner) return;
+  const text = d.status === 'pending'
+    ? cardText(d)
+    : `${d.status === 'sent' ? '✅ SENT' : '🚫 IGNORED'} — ${d.name} (chat ${d.chatId})\n\n${String(d.sentText ?? d.answer).slice(0, 900)}`;
+  const extra = d.status === 'pending' ? { reply_markup: keyboard(d.id) } : { reply_markup: { inline_keyboard: [] } };
+  try {
+    await api.editMessageText({ chat_id: owner, message_id: d.ownerMsgId, text, ...extra });
+  } catch {
+    // The card may be too old to edit (Telegram keeps ~48 h) or already gone.
+    // Not an error worth surfacing: the panel is the source of truth.
+  }
+}
+
 // Message the owner with the draft card. Never throws: a failed notification must
 // not lose the draft (it stays visible in the panel).
 export async function notifyOwner(draft) {
   const owner = await ownerId();
   if (!owner) return null;
   try {
-    const res = await api.sendMessage({
-      chat_id: owner,
-      text: cardText(draft),
-      reply_markup: keyboard(draft.id),
-    });
+    const res = await api.sendMessage({ chat_id: owner, text: cardText(draft), reply_markup: keyboard(draft.id) });
     const msgId = res?.message_id;
     if (msgId) {
       await db.insert(drafts).values({ id: draft.id, ownerMsgId: msgId })
@@ -117,6 +122,18 @@ export async function notifyOwner(draft) {
 
 // --- actions -------------------------------------------------------------------
 
+export async function updateDraftText(id, text, { reasons = [] } = {}) {
+  const d = await getDraft(id);
+  if (!d) throw new Error('Draft not found.');
+  if (d.status !== 'pending') throw new Error(`This draft was already ${d.status} — it cannot be edited.`);
+  const trimmed = String(text ?? '').trim();
+  if (!trimmed) throw new Error('The draft is empty.');
+  await db.insert(drafts).values({ id: d.id, answer: trimmed, guard: JSON.stringify(reasons) })
+    .onConflictDoUpdate({ target: drafts.id, set: { answer: trimmed, guard: JSON.stringify(reasons) } }).run();
+  await refreshCard(d.id);
+  return getDraft(d.id);
+}
+
 export async function sendDraft(id, { text } = {}) {
   const d = await getDraft(id);
   if (!d) throw new Error('Draft not found.');
@@ -126,24 +143,30 @@ export async function sendDraft(id, { text } = {}) {
   if (!finalText) throw new Error('The draft is empty.');
 
   // Last line of defence: run the text through the guards again, even if you edited it.
-  const guarded = guardOutgoing(finalText, { ownerName: await ownerNameSafe(), lang: d.lang });
+  const ownerName = await getSetting('owner_name', 'the owner');
+  const guarded = guardOutgoing(finalText, { ownerName, lang: d.lang });
   const sendText = guarded.blocked ? guarded.text : finalText;
 
   await say(d.chatId, sendText, { business_connection_id: d.connId });
-  await db.insert(drafts).values({ id: d.id, status: 'sent', sentText: sendText })
-    .onConflictDoUpdate({ target: drafts.id, set: { status: 'sent', sentText: sendText, answer: sendText } })
+  const resolved = nowSec();
+  await db.insert(drafts).values({ id: d.id, status: 'sent', sentText: sendText, resolved })
+    .onConflictDoUpdate({ target: drafts.id, set: { status: 'sent', sentText: sendText, answer: sendText, resolved } })
     .run();
   await rememberExchange(`secretary:${d.chatId}`, d.incoming, sendText);
   await logActivity('sent', `Sent to ${d.name} (chat ${d.chatId})${guarded.reasons.length ? ` — guards: ${guarded.reasons.join(', ')}` : ''}`);
+  await refreshCard(d.id);
   return { ...d, status: 'sent', sentText: sendText, guardReasons: guarded.reasons };
 }
 
 export async function ignoreDraft(id) {
   const d = await getDraft(id);
   if (!d) throw new Error('Draft not found.');
-  await db.insert(drafts).values({ id: d.id, status: 'ignored' })
-    .onConflictDoUpdate({ target: drafts.id, set: { status: 'ignored', resolved: nowSec() } }).run();
+  if (d.status !== 'pending') throw new Error(`This draft is already ${d.status}.`);
+  const resolved = nowSec();
+  await db.insert(drafts).values({ id: d.id, status: 'ignored', resolved })
+    .onConflictDoUpdate({ target: drafts.id, set: { status: 'ignored', resolved } }).run();
   await logActivity('info', `Ignored the draft for ${d.name} (chat ${d.chatId})`);
+  await refreshCard(d.id);
   return d;
 }
 
@@ -152,22 +175,13 @@ export async function regenerateDraft(id) {
   if (!d) throw new Error('Draft not found.');
   if (d.status !== 'pending') throw new Error(`This draft is already ${d.status}.`);
 
+  const ownerName = await getSetting('owner_name', 'the owner');
   const raw = await respond({ scope: `secretary:${d.chatId}`, userText: d.incoming, mode: 'secretary', remember: false });
-  const guarded = guardOutgoing(raw, { ownerName: await ownerNameSafe(), lang: d.lang });
+  const guarded = guardOutgoing(raw, { ownerName, lang: d.lang });
   await db.insert(drafts).values({ id: d.id, answer: guarded.text, guard: JSON.stringify(guarded.reasons) })
     .onConflictDoUpdate({ target: drafts.id, set: { answer: guarded.text, guard: JSON.stringify(guarded.reasons) } }).run();
-  const fresh = await getDraft(id);
-  if (fresh?.ownerMsgId) {
-    try {
-      await api.editMessageText({ chat_id: await ownerId(), message_id: fresh.ownerMsgId, text: cardText(fresh), reply_markup: keyboard(fresh.id) });
-    } catch { /* ignore */ }
-  }
-  return fresh;
-}
-
-async function ownerNameSafe() {
-  const { getSetting } = await import('./settings.js');
-  return getSetting('owner_name', 'the owner');
+  await refreshCard(d.id);
+  return getDraft(d.id);
 }
 
 // Telegram inline-button presses. Returns true if the update was ours.
@@ -204,18 +218,6 @@ export async function handleDraftCallback(query) {
       await regenerateDraft(id);
     } else {
       await answer('Unknown action.', true);
-      return true;
-    }
-
-    // Update the card in place so the chat does not fill with old drafts.
-    const after = await getDraft(id);
-    if (after?.ownerMsgId) {
-      const status = after.status === 'sent' ? '✅ SENT' : after.status === 'ignored' ? '🚫 IGNORED' : null;
-      const text = status
-        ? `${status} — ${after.name} (chat ${after.chatId})\n\n${String(after.sentText ?? after.answer).slice(0, 900)}`
-        : cardText(after);
-      const extra = status ? { reply_markup: { inline_keyboard: [] } } : { reply_markup: keyboard(after.id) };
-      await api.editMessageText({ chat_id: owner, message_id: after.ownerMsgId, text, ...extra }).catch(() => {});
     }
   } catch (e) {
     await answer(e?.message ?? String(e), true);
@@ -228,7 +230,6 @@ function safeJson(s) {
   try { return JSON.parse(s || '[]'); } catch { return []; }
 }
 
-// Small helper used by the panel: the languages we can name for a draft.
 export function draftLangLabel(code) {
   return language(code)?.label ?? code ?? 'unknown';
 }

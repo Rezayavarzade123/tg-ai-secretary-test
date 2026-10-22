@@ -9,7 +9,7 @@
 
 import os from 'node:os';
 import { api, setBotToken, botToken } from './sdk/telegram.mjs';
-import { load, save, backup, getStateFile } from './sdk/store.mjs';
+import { load, save, backup, getStateFile, acquireLock, releaseLock, externalWrite } from './sdk/store.mjs';
 import { getSetting, setSetting } from '../tgcloud/lib/settings.js';
 import { ownerId } from '../tgcloud/lib/owner.js';
 import { handleDraftCallback, countPendingDrafts } from '../tgcloud/lib/drafts.js';
@@ -39,7 +39,9 @@ function lanAddress() {
 }
 
 function banner() {
-  const url = runtime.panelUrlPublic || `http://${lanAddress()}:${runtime.panelPort}`;
+  const url = runtime.panelAvailable
+    ? (runtime.panelUrlPublic || `http://${lanAddress()}:${runtime.panelPort}`)
+    : 'NOT RUNNING (port busy — set PANEL_PORT)';
   const lines = [
     '',
     '  Secretary — local runtime',
@@ -63,6 +65,8 @@ function banner() {
 let offset = 0;
 let stopped = false;
 let tokenAtStart = '';
+let lastPollErrorKey = '';
+let pollErrorSince = 0;
 
 function dispatch(update) {
   if (update.message) {
@@ -112,6 +116,10 @@ async function pollLoop() {
       const updates = await api.getUpdates({ offset, timeout: 25, allowed_updates: ALLOWED_UPDATES });
       runtime.polling = false;
       backoff = 1000;
+      if (lastPollErrorKey) {
+        log('info', `Telegram is reachable again after ${Math.round((Date.now() - pollErrorSince) / 1000)} s`);
+        lastPollErrorKey = '';
+      }
       for (const u of updates) {
         offset = Math.max(offset, u.update_id + 1);
         dispatch(u);
@@ -120,16 +128,28 @@ async function pollLoop() {
       runtime.polling = false;
       noteError('poll', e);
       const desc = String(e?.description ?? e?.message ?? e);
+      const key = `${e?.status ?? 0}:${desc}`;
 
-      // 409 means a webhook is still registered, or another copy of the bot is polling.
-      if (e?.status === 409) {
-        log('warn', 'Telegram says a webhook or another poller is active. Removing the webhook and retrying…');
-        try { await api.deleteWebhook({ drop_pending_updates: false }); } catch { /* ignore */ }
-      } else if (/bot token|unauthorized/i.test(desc)) {
-        log('error', 'The bot token was rejected. Fix BOT_TOKEN in bot/.env or in the control panel.');
-      } else {
-        log('error', `getUpdates failed: ${desc}`);
+      // Say it once per distinct failure, not once per retry: on a flaky link this
+      // used to fill the log with hundreds of identical lines.
+      if (key !== lastPollErrorKey) {
+        lastPollErrorKey = key;
+        pollErrorSince = Date.now();
+        if (e?.status === 409) {
+          log('warn', 'Telegram says a webhook or another poller is active. Removing the webhook and retrying…');
+        } else if (/bot token|unauthorized/i.test(desc)) {
+          log('error', 'The bot token was rejected. Fix BOT_TOKEN in bot/.env or in the control panel.');
+        } else {
+          log('error', `getUpdates failed: ${desc}`);
+        }
       }
+
+      // 409 means a webhook is still registered or a second copy is polling.
+      // Removing the webhook is the fix; it is cheap, so retry it every round.
+      if (e?.status === 409) {
+        try { await api.deleteWebhook({ drop_pending_updates: false }); } catch { /* ignore */ }
+      }
+
       await sleep(backoff);
       backoff = Math.min(backoff * 2, 30000);
     }
@@ -158,11 +178,16 @@ async function connectBot() {
   }
 }
 
-// Called by the panel when the token or the owner changes.
+// Called by the panel after it has verified a token with Telegram.
 runtime.onTokenChange = async (token) => {
   setBotToken(token);
   tokenAtStart = token;
   offset = 0;
+  if (!token) {
+    runtime.bot = null;
+    log('warn', 'the bot token was cleared — polling stopped');
+    return null;
+  }
   try { await api.deleteWebhook({ drop_pending_updates: false }); } catch { /* ignore */ }
   return connectBot();
 };
@@ -171,6 +196,12 @@ runtime.onTokenChange = async (token) => {
 
 async function main() {
   load();
+  try {
+    acquireLock();
+  } catch (e) {
+    console.error(`\n✖ ${e.message}\n`);
+    process.exit(1);
+  }
   backup();
   log('info', `state file: ${getStateFile()}`);
 
@@ -207,7 +238,9 @@ async function main() {
     host: process.env.PANEL_HOST || '0.0.0.0',
     lanAddress: lanAddress(),
   });
-  await setSetting('panel_url', runtime.panelUrlPublic || `http://${lanAddress()}:${runtime.panelPort}`).catch(() => {});
+  if (runtime.panelAvailable) {
+    await setSetting('panel_url', runtime.panelUrlPublic).catch(() => {});
+  }
 
   banner();
   if (await getSetting('secretary_mode', '') === '') {
@@ -224,7 +257,11 @@ async function main() {
     if (stopped) return;
     stopped = true;
     log('info', `${sig} received — stopping (saving state)`);
+    if (externalWrite()) {
+      log('warn', 'the state file was changed by another process while this bot was running; this save overwrote it');
+    }
     try { save(); } catch { /* ignore */ }
+    releaseLock();
     await sleep(300);
     process.exit(0);
   };

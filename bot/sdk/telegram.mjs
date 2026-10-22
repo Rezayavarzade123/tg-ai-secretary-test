@@ -24,8 +24,8 @@ export class TelegramError extends Error {
   }
 }
 
-async function call(method, params = {}, { timeoutMs = 45000 } = {}) {
-  const token = botToken();
+async function call(method, params = {}, { timeoutMs = 45000, token: tokenOverride } = {}) {
+  const token = tokenOverride ?? botToken();
   if (!token) throw new TelegramError(method, 0, 'No bot token configured. Put BOT_TOKEN in bot/.env or set it in the control panel.');
 
   const controller = typeof AbortController === 'function' ? new AbortController() : null;
@@ -56,8 +56,17 @@ async function call(method, params = {}, { timeoutMs = 45000 } = {}) {
   return data?.result;
 }
 
+// Check a token BEFORE storing it: the panel must not be able to save a token
+// that Telegram rejects and then leave a bot that polls forever with a 401.
+export async function verifyToken(token) {
+  if (!token) throw new TelegramError('getMe', 0, 'No token given.');
+  const me = await call('getMe', {}, { token });
+  return me;
+}
+
 export const api = {
   call,
+  verifyToken,
   getMe: () => call('getMe'),
   deleteWebhook: (params = {}) => call('deleteWebhook', params),
   getUpdates: (params = {}) => call('getUpdates', { timeout: 30, ...params }, { timeoutMs: ((params.timeout ?? 30) + 15) * 1000 }),

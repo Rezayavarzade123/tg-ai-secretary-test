@@ -13,7 +13,7 @@ A Telegram AI assistant and secretary that can answer as **your** automated assi
 
 Both use the same handlers, the same database schema and the same prompts. The local runtime provides a **control panel** in the browser; Telegram gets `/lang`, `/mode` and inline-button approvals.
 
-> **Status:** experimental. The local runtime has unit tests plus an end-to-end self test (`npm run selftest`, 15 checks) that covers connections, drafts, approvals, the safety net and the panel API. It has **not** been tested on real PS4 hardware or against a live Telegram account in this repository — the first thing to do is connect your own bot and send it a message.
+> **Status:** experimental. The local runtime has unit tests plus an end-to-end self test (`npm run selftest`, 20 checks) that covers connections, drafts, approvals, the safety net and the panel API. It has **not** been tested on real PS4 hardware or against a live Telegram account in this repository — the first thing to do is connect your own bot and send it a message.
 
 ## What it does
 
@@ -101,7 +101,7 @@ For the PS4 specifics (build flags, thermals, boot injection, systemd units), se
 
 It writes the same `settings` rows the Telegram commands write, so the two front doors can't disagree.
 
-Security: the panel is for your LAN. It prints a random token on first run (`bot/state/panel-token`), requires it, and binds to `0.0.0.0:8787` by default. Set `PANEL_HOST=127.0.0.1` to keep it on the machine, or `PANEL_TOKEN` for a fixed token. **Do not port-forward it.**
+Security: the panel is for your LAN. It prints a random token on first run (`bot/state/panel-token`), requires it for every call, throttles wrong guesses, sends a strict CSP with `frame-ancestors 'none'`, refuses cross-origin writes, and binds to `0.0.0.0:8787` by default. Set `PANEL_HOST=127.0.0.1` to keep it on the machine only, or `PANEL_TOKEN` for a fixed token. **Do not port-forward it** — it is a control surface for an account that can send messages as you. The findings from auditing it (21 findings, all fixed and tested) are in [docs/panel-audit.md](docs/panel-audit.md).
 
 ### Running it as a service
 
@@ -138,8 +138,8 @@ BOT_STATE_DIR=./bot/state-demo PANEL_TOKEN=demo npm start
 ### Tests
 
 ```bash
-npm test          # 41 unit tests: text, prompts, delay, typing, language, guards, local db
-npm run selftest  # 15 end-to-end checks with fake Telegram + fake model
+npm test          # 52 unit tests: text, prompts, delay, typing, language, guards, local db, panel settings
+npm run selftest  # 20 end-to-end checks with fake Telegram + fake model
 ```
 
 ---
@@ -287,6 +287,8 @@ Rules of the serverless runtime: relative imports must end in `.js`, there are n
 - Text only. Photos, voice and stickers are announced to you, not answered.
 - Replies are plain text (model output breaks Markdown).
 - **Serverless only:** the Ollama key lives in the database because that runtime documents no secrets store. The local runtime reads it from `bot/.env` / the panel instead.
+- **The panel is plain HTTP with one shared token**, no user accounts. Fine on a home LAN; use `PANEL_HOST=127.0.0.1` and an SSH tunnel if the network is not yours.
+- **One bot per state directory.** A lock file refuses a second copy (two pollers fight over `getUpdates` and two writers overwrite each other's state).
 
 ## License
 

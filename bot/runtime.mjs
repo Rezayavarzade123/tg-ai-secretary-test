@@ -10,6 +10,7 @@ export const runtime = {
   bot: null,            // getMe() result
   panelUrl: '',         // includes the access token (console only)
   panelUrlPublic: '',   // safe to store and share on the LAN
+  panelAvailable: true, // false when the port could not be bound
   log: [],              // last N log lines, for the panel
   onTokenChange: null,  // set by runner.mjs
   onRestart: null,
