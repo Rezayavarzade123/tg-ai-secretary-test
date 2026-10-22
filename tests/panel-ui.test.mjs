@@ -72,6 +72,17 @@ test('every element the panel writes has a style or is a known bare element', ()
   assert.deepEqual(unknown, [], `classes used by the UI but not styled: ${unknown.join(', ')}`);
 });
 
+test('the session survives a setup that drops cookies', () => {
+  // A proxy that strips Set-Cookie would otherwise make a correct token look
+  // wrong: the login succeeds, then every request is anonymous again.
+  assert.match(js, /sessionStorage\.setItem\(TOKEN_KEY/, 'the token is kept in the tab');
+  assert.match(js, /Authorization: `Bearer \$\{token\}`/, 'and sent as a header on every request');
+  assert.match(js, /body\.token \|\| token/, 'the login response is what it is kept from');
+  assert.match(server, /token: ACCESS_TOKEN/, 'the login route hands the token back');
+  assert.match(js, /searchParams\.get\('token'\)/, 'a ?token= link signs the tab in');
+  assert.match(js, /history\.replaceState/, 'and the token is taken back out of the address bar');
+});
+
 test('the API routes the UI calls exist on the server', () => {
   const calls = [...new Set([...js.matchAll(/api\('(\/api\/[^'`?]+)/g)].map((m) => m[1]))];
   for (const call of calls) {

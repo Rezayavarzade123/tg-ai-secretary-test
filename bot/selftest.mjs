@@ -628,6 +628,36 @@ await check('a Telegram failure from the panel is a 502, not a 400', async () =>
   await new Promise((resolve) => server.close(resolve));
 });
 
+await check('a correct token works even when the browser keeps no cookie', async () => {
+  // The failure this guards: a proxy strips Set-Cookie, so the login succeeds and
+  // every request after it is anonymous — the panel says "wrong token" forever.
+  const { startPanel } = await import('./panel/server.mjs');
+  const server = await startPanel({ port: 0, host: '127.0.0.1', lanAddress: '127.0.0.1' });
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const login = await realFetch(`${base}/api/login`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ token: 'selftest-token' }),
+  });
+  assert.equal(login.status, 200);
+  const body = await login.json();
+  assert.equal(body.token, 'selftest-token', 'the login hands the token back for the header path');
+
+  // No cookie jar here: only the Authorization header, exactly what the page does.
+  const state = await realFetch(`${base}/api/state`, { headers: { Authorization: `Bearer ${body.token}` } });
+  assert.equal(state.status, 200, 'a bearer header alone is enough');
+
+  // And a wrong token still fails with the reason, not a generic message.
+  const wrong = await realFetch(`${base}/api/login`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ token: 'nope' }),
+  });
+  assert.equal(wrong.status, 401);
+  assert.match((await wrong.json()).error, /Wrong token/);
+  await new Promise((resolve) => server.close(resolve));
+});
+
 await check('login is throttled after repeated wrong tokens', async () => {
   const { startPanel } = await import('./panel/server.mjs');
   const server = await startPanel({ port: 0, host: '127.0.0.1', lanAddress: '127.0.0.1' });

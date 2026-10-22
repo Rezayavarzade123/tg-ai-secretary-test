@@ -285,6 +285,7 @@ console differs from a PC. The software above does not care.
 | Symptom | Likely cause | Fix |
 |---|---|---|
 | Panel: bot "no bot" | token missing/rejected | Setup → paste token; check `journalctl` for a 401 |
+| Panel asks for the token, then rejects the right one | the browser is not keeping the session cookie (a proxy that strips `Set-Cookie`, cookies blocked, an embedded frame) | fixed since 1.2: the page keeps the token in the tab and sends it as a header. Check what the server thinks with `curl -X POST -H 'Content-Type: application/json' -d '{"token":"demo"}' http://127.0.0.1:8787/api/login` |
 | "webhook or another poller is active" (409) | serverless deployment or a second copy is running | stop it; the runner calls `deleteWebhook` itself |
 | Model offline in the panel | llama-server not running / wrong URL | `curl http://127.0.0.1:8080/v1/models`; start the unit |
 | Replies very slow | prefill, not generation | lower `HISTORY_LIMIT`, keep `-np 1`, check load average |

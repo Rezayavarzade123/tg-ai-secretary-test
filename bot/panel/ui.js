@@ -23,19 +23,49 @@ const TITLES = {
   prompts: 'Prompts', notes: 'Notes', activity: 'Activity', setup: 'Setup',
 };
 
+// --- session -------------------------------------------------------------------
+// The session is deliberately kept twice: in the HttpOnly cookie the server sets,
+// and in sessionStorage, which this script sends as a bearer header. Some setups
+// drop cookies — a reverse proxy that strips Set-Cookie, a browser with cookies
+// blocked, a preview frame on another origin — and there a correct token looks
+// wrong, forever, because every request after the login is anonymous again. The
+// header path cannot be dropped by anyone in the middle.
+const TOKEN_KEY = 'secretary.panel.token';
+
+function savedToken() {
+  try { return sessionStorage.getItem(TOKEN_KEY) || ''; } catch { return ''; }
+}
+function saveToken(token) {
+  try {
+    if (token) sessionStorage.setItem(TOKEN_KEY, token);
+    else sessionStorage.removeItem(TOKEN_KEY);
+  } catch { /* private mode, no storage: the cookie has to carry us */ }
+}
+
 // --- networking ---------------------------------------------------------------
 async function api(path, options = {}) {
+  const { headers, ...rest } = options;
+  const token = savedToken();
   const res = await fetch(path, {
-    headers: { 'Content-Type': 'application/json' },
     credentials: 'same-origin',
-    ...options,
+    ...rest,
+    headers: {
+      'Content-Type': 'application/json',
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...headers,
+    },
   });
-  if (res.status === 401) {
-    showLogin(true);
-    throw new Error('Unauthorised — enter the panel token.');
-  }
   let body = null;
   try { body = await res.json(); } catch { body = {}; }
+  if (res.status === 401) {
+    // The login route reports "wrong token" itself; everything else means the
+    // session is gone, so drop the stale copy and ask again.
+    if (path !== '/api/login') {
+      saveToken('');
+      showLogin(true);
+    }
+    throw new Error(body?.error || 'Unauthorised — enter the panel token.');
+  }
   if (!res.ok) throw new Error(body?.error || `Request failed (${res.status})`);
   return body;
 }
@@ -952,6 +982,7 @@ function wire() {
     logoutBtn.onclick = async () => {
       try {
         await api('/api/logout', { method: 'POST' });
+        saveToken('');
         showLogin(true);
         S.state = null;
         $('#view').innerHTML = '';
@@ -988,7 +1019,8 @@ async function saveSettings(patch, okMessage, extra = {}) {
 $('#loginBtn').onclick = async () => {
   const token = $('#tokenInput').value.trim();
   try {
-    await api('/api/login', { method: 'POST', body: JSON.stringify({ token }) });
+    const body = await api('/api/login', { method: 'POST', body: JSON.stringify({ token }) });
+    saveToken(body.token || token);
     $('#loginErr').textContent = '';
     $('#tokenInput').value = '';
     showLogin(false);
@@ -1014,6 +1046,17 @@ setInterval(() => {
 }, 5000);
 
 (async () => {
+  // "/?token=…" signs this tab in. Keep it in sessionStorage and take it out of
+  // the address bar, so it does not survive in history, a screenshot or a link
+  // someone was sent.
+  try {
+    const fromUrl = new URL(location.href).searchParams.get('token');
+    if (fromUrl) {
+      saveToken(fromUrl.trim());
+      history.replaceState(null, '', location.pathname + location.hash);
+    }
+  } catch { /* no URL API: the cookie path still works */ }
+
   try {
     const ping = await api('/api/ping');
     if (ping.needsAuth) { showLogin(true); return; }

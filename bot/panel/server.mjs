@@ -566,7 +566,12 @@ async function handleApi(req, res, url) {
     if (!ACCESS_TOKEN || sameSecret(body.token ?? '', ACCESS_TOKEN)) {
       loginFails.delete(ip);
       res.setHeader('Set-Cookie', `panel_token=${encodeURIComponent(ACCESS_TOKEN)}; Path=/; HttpOnly; SameSite=Strict; Max-Age=31536000`);
-      return json(res, 200, { ok: true });
+      // Also hand the token back so the page can keep it and send it as a bearer
+      // header. Some proxies strip Set-Cookie, and without this the cookie-less
+      // client would be anonymous again on the very next request — which looks
+      // exactly like "the right token is rejected". The caller just proved it
+      // knows the token, so returning it discloses nothing new.
+      return json(res, 200, ACCESS_TOKEN ? { ok: true, token: ACCESS_TOKEN } : { ok: true });
     }
     noteLoginFailure(ip);
     return json(res, 401, { error: 'Wrong token. It is printed when the bot starts, and stored in the panel token file.' });
@@ -773,7 +778,9 @@ export async function startPanel({ port = 8787, host = '0.0.0.0', lanAddress = '
         log('error', `panel: cannot read ${asset.file}`);
         return send(res, 500, { 'Content-Type': 'text/plain; charset=utf-8' }, `${asset.file} is missing next to panel/server.mjs`);
       }
-      send(res, 200, { 'Content-Type': asset.type }, data);
+      // No caching: an updated ui.js that the browser refuses to re-fetch is a
+      // support problem that looks like a bug in the panel.
+      send(res, 200, { 'Content-Type': asset.type, 'Cache-Control': 'no-store' }, data);
     });
   });
 
