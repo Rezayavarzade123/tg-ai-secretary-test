@@ -10,6 +10,20 @@ import {
 // can otherwise rewrite the secretary's behaviour once and have it stick forever.
 // Everything here is pure, so the rules are readable.
 
+test('a fact about what the model could not find is not a fact', () => {
+  // From a real install: "Shadi Sadeghi Razlighi's city is not mentioned." was
+  // written down as something learned, and then injected into the prompt.
+  assert.equal(isUsableFact("Shadi Sadeghi Razlighi's city is not mentioned."), false);
+  assert.equal(isUsableFact('Her number is unknown'), false);
+  assert.equal(isUsableFact('No information about the job'), false);
+  // Persian, where \b does not work: the pattern must not rely on it.
+  assert.equal(isUsableFact('شهر او ذکر نشده است'), false);
+  assert.equal(isUsableFact('نامشخص است'), false);
+  // What the person actually says about themselves is still kept.
+  assert.equal(isUsableFact('Shadi is a technician.'), true);
+  assert.equal(isUsableFact('Works nights at the hospital'), true);
+});
+
 test('a plain fact about the sender is accepted', () => {
   assert.equal(isUsableFact('Works night shifts at the hospital'), true);
   assert.equal(isUsableFact('Name is Maria, lives in Porto'), true);

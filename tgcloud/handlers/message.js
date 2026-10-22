@@ -29,7 +29,7 @@ This private chat
 /remember <text>  save a private note
 /notes  list notes
 /forget <id>  delete a note
-/reset  clear our conversation memory
+/reset [chat_id]  clear our conversation memory, or one contact's
 
 Secretary mode (I answer people who message your main account)
 /mode draft|auto|off  draft = you approve each reply, auto = send it, off = never
@@ -767,10 +767,25 @@ async function runCommand(chatId, message, { cmd, arg }) {
       return;
     }
 
-    case 'reset':
+    case 'reset': {
+      // "/reset 74621273" clears one contact's Secretary-mode memory. That is the way
+      // out of a conversation that has poisoned itself: if the model said the same
+      // canned line five times, those five copies are now what it reads before
+      // answering, and the copies are the reason it says it again.
+      const target = arg.trim();
+      if (target) {
+        if (!/^\d{3,}$/.test(target)) {
+          await say(chatId, 'Usage: /reset  (your own chat)   /reset <chat_id>  (one contact, see /contacts)');
+          return;
+        }
+        await resetHistory(`secretary:${Number(target)}`);
+        await say(chatId, `Memory cleared for chat ${target}. Their next message starts from nothing.`);
+        return;
+      }
       await resetHistory('bot');
       await say(chatId, 'Conversation memory cleared. Your notes are untouched.');
       return;
+    }
 
     case 'secretary': {
       const v = arg.toLowerCase();

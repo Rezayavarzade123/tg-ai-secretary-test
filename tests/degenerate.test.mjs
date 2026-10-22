@@ -131,6 +131,40 @@ test('the guard and the apology follow a language stored as a name', () => {
   assert.match(guardTexts('tlh').disclose('Sam'), /automated assistant/);
 });
 
+test('"I cannot answer in English", in any language, is a failure', () => {
+  // From a real install: a Persian message got this, in fluent Persian, five times.
+  // The model was confused about the reply language and gave up out loud instead of
+  // answering - and the sentence then went into the history and came back.
+  const cases = [
+    ['من یک دستیار خودکار هستم و نمی\u200cتوانم به زبان انگلیسی پاسخ دهم. لطفاً بگویید چه کار کنم.', 'سلام'],
+    ['I am an automated assistant and I cannot answer in English.', 'hello'],
+    ['Je ne peux pas répondre en anglais, désolé.', 'bonjour'],
+    ['No puedo responder en inglés.', 'hola'],
+    ['Ich kann nicht auf Englisch antworten.', 'hallo'],
+    ['Я не могу ответить на английском.', 'привет'],
+    ['لا أستطيع الإجابة باللغة الإنجليزية.', 'مرحبا'],
+  ];
+  for (const [answer, userText] of cases) {
+    const v = analyseAnswer({ answer, userText });
+    assert.equal(v.ok, false, answer);
+    assert.ok(v.reasons.includes('refusal'), `${answer} -> ${v.reasons}`);
+  }
+
+  // Still not a blanket rule: an ordinary reply that mentions a language, or claims
+  // it cannot speak *for* someone, is fine.
+  assert.equal(analyseAnswer({ answer: 'Sure, I can answer in English if you prefer.', userText: 'hi' }).ok, true);
+  assert.equal(analyseAnswer({ answer: 'I cannot speak for Sam, but I will pass this on.', userText: 'hi' }).ok, true);
+  assert.equal(analyseAnswer({ answer: 'أهلاً، سأبلغ سام برسالتك.', userText: 'مرحبا' }).ok, true);
+});
+
+test('the retry nudge names what actually went wrong', () => {
+  // Telling a model "do not copy the message" when it just claimed it cannot speak
+  // English is a wasted second call.
+  assert.match(correctionNote(['refusal']), /never say you cannot answer in a language/);
+  assert.match(correctionNote(['echo']), /repeated the message/);
+  assert.match(correctionNote(), /Answer in your own words/);
+});
+
 test('a language this file cannot write is left to the model, on purpose', () => {
   // Answering in English a Swedish speaker who said "hej" would be worse than
   // letting the model answer - and the repetition checks still apply to its reply.

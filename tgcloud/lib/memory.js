@@ -58,7 +58,17 @@ const SENSITIVE = [
   /\b\d{3}[- ]\d{2}[- ]\d{4}\b/,        // national-insurance / SSN shaped
 ];
 
-const NEGATIVE = /\b(not|never|no longer|doesn'?t|don'?t)\b/i;
+// "Shadi's city is not mentioned." A model asked for facts will offer what it could
+// not find, and one of these was stored on a real install. It is a fact about the
+// extraction, not about the person: it teaches the prompt nothing, and it takes one
+// of the twelve slots a real fact could have had.
+const ABSENT = [
+  // \b is ASCII-only: it never matches next to a Persian letter, so the two
+  // scripts get separate patterns.
+  /\b(not|isn'?t|no)\s+(?:(?:been|yet)\s+)?(mentioned|specified|given|stated|provided|known|clear|available|found)\b/i,
+  /\b(unknown|unclear|not known|not sure|none given|no information)\b/i,
+  /(ذکر نشده|اشاره نشده|نامشخص|مشخص نیست|گفته نشده|اطلاعی نیست|در دسترس نیست)/,
+];
 
 // The filter every fact must survive, whichever model or prompt proposed it.
 export function isUsableFact(text) {
@@ -68,6 +78,7 @@ export function isUsableFact(text) {
   if (/^(fact|note|remember)\s*:/i.test(t)) return false; // the label leaked in
   if (INSTRUCTION.some((re) => re.test(t))) return false;
   if (SENSITIVE.some((re) => re.test(t))) return false;
+  if (ABSENT.some((re) => re.test(t))) return false;
   if (/https?:\/\//i.test(t)) return false;
   // Preamble from the model, not a fact: "Here are the facts I found:", "The
   // assistant was polite." Small models like to narrate; nothing about our task

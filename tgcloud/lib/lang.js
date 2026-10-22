@@ -254,12 +254,17 @@ export function detectLang(text) {
 // ---------------------------------------------------------------------------
 // The line added to the system prompt.
 // ---------------------------------------------------------------------------
+// The last sentence matters more than it looks: a 1.7B model that gets confused
+// about the language does not ask, it announces that it cannot answer in English -
+// in fluent Persian (see lib/degenerate.js). Saying out loud that it can is cheap.
+const NEVER_REFUSE = ' You can understand and write the language the person used; never reply that you cannot answer in a language, and do not talk about languages at all unless asked.';
+
 export function languageLine({ lang = 'en', auto = true } = {}) {
   const name = languagePromptName(lang);
   if (auto) {
-    return `Language: reply in the language of the person's latest message (default: ${name}). Keep the language consistent inside one reply.`;
+    return `Language: reply in the language of the person's latest message (default: ${name}). Keep the language consistent inside one reply.${NEVER_REFUSE}`;
   }
-  return `Language: always reply in ${name}, even if the person writes in another language. Do not switch unless they explicitly ask you to translate.`;
+  return `Language: always reply in ${name}, even if the person writes in another language. Do not switch unless they explicitly ask you to translate.${NEVER_REFUSE}`;
 }
 
 // Which language to answer in.

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { store } from './fake-sdk.mjs';
-import { systemPrompt, defaultPrompt } from '../tgcloud/lib/brain.js';
+import { systemPrompt, defaultPrompt, sanitiseHistory } from '../tgcloud/lib/brain.js';
 import { getSetting, setSetting, delSetting } from '../tgcloud/lib/settings.js';
 import { utf8Manual, decodeUtf8, nowString } from '../tgcloud/lib/text.js';
 import { MAX_PROMPT_CHARS } from '../tgcloud/lib/config.js';
@@ -106,4 +106,65 @@ test('hand-written UTF-8 decoder matches TextDecoder (Persian, emoji, mixed)', (
     assert.equal(utf8Manual(bytes), s);
     assert.equal(decodeUtf8(bytes), s);
   }
+});
+
+// ------------------------------------------------------------------ history
+
+test('a conversation that repeated itself is cleaned up before the model sees it', () => {
+  // The real transcript, minus the refusal (that line is dropped entirely, and has
+  // its own test below): one bad sentence, sent four times, then read back four times
+  // as context. Dropping the duplicates is the difference between a model that
+  // answers and a model that recites.
+  const canned = 'سلام! 😊 ما روی از چی؟ این یک پاسخ تکراری است.';
+  const rows = [
+    { role: 'user', content: 'سلام' },
+    { role: 'assistant', content: canned },
+    { role: 'user', content: 'تو چرا یک چیز را تکرار می‌کنی؟' },
+    { role: 'assistant', content: canned },
+    { role: 'user', content: 'سیکنتر' },
+    { role: 'assistant', content: canned },
+    { role: 'user', content: 'منو میشناسی؟' },
+    { role: 'assistant', content: 'بله، شما رضا هستید.' },
+  ];
+  const clean = sanitiseHistory(rows);
+  const cannedCount = clean.filter((m) => m.content === canned).length;
+  assert.equal(cannedCount, 1, 'one copy of the canned line, not four');
+  // Order is preserved, and the copy that survives is the latest one, where the
+  // conversation actually was.
+  assert.deepEqual(clean.map((m) => m.role), ['user', 'user', 'user', 'assistant', 'user', 'assistant']);
+  assert.equal(clean.at(-1).content, 'بله، شما رضا هستید.');
+  assert.equal(clean[3].content, canned);
+});
+
+test('a stored "I cannot answer in English" never reaches the model again', () => {
+  // The conversation heals itself: the bad line was the reason for the next bad line.
+  const clean = sanitiseHistory([
+    { role: 'user', content: 'سلام' },
+    { role: 'assistant', content: 'من یک دستیار خودکار هستم و نمی‌توانم به زبان انگلیسی پاسخ دهم.' },
+    { role: 'user', content: 'چطوری؟' },
+    { role: 'assistant', content: 'خوبم، ممنون.' },
+  ]);
+  assert.deepEqual(clean.map((m) => m.content), ['سلام', 'چطوری؟', 'خوبم، ممنون.']);
+});
+
+test('an assistant turn that only hands the message back is dropped', () => {
+  const clean = sanitiseHistory([
+    { role: 'user', content: 'منو میشناسی؟' },
+    { role: 'assistant', content: 'منو میشناسی؟' },
+    { role: 'user', content: 'سلام' },
+    { role: 'assistant', content: 'سلام' },
+  ]);
+  assert.deepEqual(clean.map((m) => m.role), ['user', 'user']);
+});
+
+test('short turns that repeat legitimately are left alone', () => {
+  // "ok" twice is a conversation, not a loop: the duplicate rule only applies to
+  // sentences, so short answers are never collapsed.
+  const rows = [
+    { role: 'user', content: 'مرسی' },
+    { role: 'assistant', content: 'ok' },
+    { role: 'user', content: 'ممنون' },
+    { role: 'assistant', content: 'ok' },
+  ];
+  assert.equal(sanitiseHistory(rows).length, 4);
 });

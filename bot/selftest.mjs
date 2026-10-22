@@ -328,6 +328,47 @@ await check('a language the app barely knows still reaches the model as itself',
   await setSetting('lang', 'en');
 });
 
+await check('a poisoned history is trimmed before the model sees it', async () => {
+  // The stuck conversation from a real install: the same canned line, stored five
+  // times. What the model is shown must contain it once.
+  const canned = 'سلام! 😊 ما روی از چی؟ این پاسخ تکراری است.';
+  const refusal = 'من یک دستیار خودکار هستم و نمی‌توانم به زبان انگلیسی پاسخ دهم. لطفاً بگویید چه کار کنم.';
+  const { rememberExchange } = await import('../tgcloud/lib/brain.js');
+  for (let i = 0; i < 5; i++) await rememberExchange('secretary:74621273', `پیام ${i}`, canned);
+  await rememberExchange('secretary:74621273', 'یک پیام دیگر', refusal);
+  const before = modelRequests.length;
+  await businessMessage({
+    business_connection_id: 'conn-1',
+    chat: { id: 74621273, type: 'private' },
+    from: { id: 74621273, first_name: 'Shadi' },
+    text: 'سلام',
+  });
+  assert.ok(modelRequests.length > before, 'the model was asked');
+  const msgs = modelRequests[modelRequests.length - 1].messages;
+  const copies = msgs.filter((m) => m.role === 'assistant' && m.content === canned).length;
+  assert.equal(copies, 1, `the model saw the canned line ${copies} times`);
+  // And the "I cannot answer in English" line is not context at all.
+  assert.equal(msgs.filter((m) => m.content === refusal).length, 0, 'the refusal line is gone');
+});
+
+await check('/reset <chat_id> clears one contact, not your own chat', async () => {
+  const { loadHistory } = await import('../tgcloud/lib/brain.js');
+  const { resetHistory } = await import('../tgcloud/lib/brain.js');
+  await rememberExchange('bot', 'a private message', 'a private reply');
+  await rememberExchange('secretary:74621273', 'hello', 'hi there');
+
+  const before = sent.length;
+  await botMessage({ message_id: 44, chat: { id: OWNER, type: 'private' }, from: { id: OWNER, first_name: 'Sam' }, text: '/reset 74621273' });
+  assert.match(sent.slice(before).at(-1).text, /Memory cleared for chat 74621273/);
+  assert.ok((await loadHistory('secretary:74621273', 10)).length === 0, 'the contact history is gone');
+  assert.ok((await loadHistory('bot', 10)).length > 0, 'your own history is untouched');
+
+  const before2 = sent.length;
+  await botMessage({ message_id: 45, chat: { id: OWNER, type: 'private' }, from: { id: OWNER, first_name: 'Sam' }, text: '/reset abc' });
+  assert.match(sent.slice(before2).at(-1).text, /Usage: \/reset/);
+  await resetHistory('bot');
+});
+
 await check('a stranger cannot press the owner\u2019s buttons', async () => {
   await businessMessage({
     business_connection_id: 'conn-1',
