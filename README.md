@@ -52,7 +52,7 @@ Nothing here is an LLM judging an LLM. Every check is code you can read in an af
 
 Same handlers, same schema, same prompts. The local runtime adds a **control panel** in the browser; Telegram gets `/lang`, `/mode` and inline-button approvals.
 
-> **Status: v1.7 — experimental.** 191 unit tests and 40 end-to-end checks pass, the panel has been audited ([21 findings, all fixed](docs/panel-audit.md)), and every path has been exercised against a fake Telegram and a fake model. It has **not** yet been run against a live Telegram account or a real 1.7B model in this repository. Connect your own bot first, in draft mode, and watch the first ten replies before you trust it.
+> **Status: v1.7 — experimental.** 206 unit tests and 43 end-to-end checks pass, the panel has been audited ([21 findings, all fixed](docs/panel-audit.md)), and every path has been exercised against a fake Telegram and a fake model. It has **not** yet been run against a live Telegram account or a real 1.7B model in this repository. Connect your own bot first, in draft mode, and watch the first ten replies before you trust it.
 
 ## What it does
 
@@ -86,6 +86,25 @@ Runs on every outgoing secretary reply, in draft and auto alike. It replaces the
 - is empty.
 
 Emergency-sounding messages never reach the model: they get a fixed instruction to call emergency services. The guard is re-applied when you press Send on a draft, so an edit can't smuggle a promise through.
+
+### Repeats, echoes, and the sentences that need no model
+
+A 1–2B model fails in ways that are not errors: it hands the message back, or brings back
+the same filler phrase it used last turn. On a real Windows box, a 1.7B model answered
+`سلام`, then `درست فارسی حرف بزن`, then `سیکنتر`, then `منو میشناسی؟` with four variations of
+the same sentence, twice echoing the message word for word.
+
+Two different answers to that (`tgcloud/lib/degenerate.js`, `tgcloud/lib/smalltalk.js`):
+
+- **Short social messages are answered from code.** Greetings, "who are you", "do you know
+  me", "thanks" — in English, Persian and Arabic. Instant on a slow CPU, exact in the right
+  language, and unable to repeat themselves. The matcher is narrow: `سلام، میشه فردا جلسه
+  بذاری؟` is a question and still goes to the model.
+- **Everything else is checked before it is sent.** An answer that is only the sender's words,
+  or the previous answer's phrase in new clothing, or the same sentence twice, is discarded:
+  one retry with a correcting system message at a higher temperature, and if that fails too,
+  a short honest sentence in place of a reply — which is not written into the conversation
+  history, so the loop cannot feed itself.
 
 ### The probe gate (`tgcloud/lib/probe.js`)
 
@@ -343,7 +362,7 @@ tg-ai-secretary/
 │  ├─ sdk/                        JSON store, query builder, Telegram client — the shim
 │  ├─ hardware.mjs                machine report → threads, flags, model
 │  ├─ updater.mjs                 check / fast-forward / roll back from the Git remote
-│  ├─ selftest.mjs                40 end-to-end checks, fake Telegram and model
+│  ├─ selftest.mjs                43 end-to-end checks, fake Telegram and model
 │  ├─ seed-demo.mjs               sample data for the panel
 │  └─ state/                      your data (git-ignored): bot.json, panel-token
 ├─ tgcloud/                    shared by both runtimes
@@ -356,6 +375,8 @@ tg-ai-secretary/
 │  │  └─ inline_query.js          @mention answers in any chat
 │  └─ lib/
 │     ├─ guard.js                 the deterministic safety net
+│     ├─ degenerate.js            echo, canned-loop and stutter detection
+│     ├─ smalltalk.js             greetings and identity, answered without a model
 │     ├─ probe.js                 the eight cases + the auto-mode gate
 │     ├─ brain.js                 prompts, memory, model call, metric per call
 │     ├─ memory.js                learning from people, and what it refuses to learn
@@ -374,7 +395,7 @@ tg-ai-secretary/
 ├─ install.sh / uninstall.sh   the Linux installer: checks, copies, settings, systemd
 ├─ install.ps1 / uninstall.ps1 the Windows installer: Scheduled Task, ACL, PATH
 ├─ bot/cli.mjs                 version + update, shared by both front ends
-├─ tests/                      22 files, run against a fake sdk
+├─ tests/                      24 files, run against a fake sdk
 └─ docs/                       install.md · windows.md · local.md · prompts.md · panel-audit.md · plan-local-ps4.md
 ```
 
@@ -385,8 +406,8 @@ tg-ai-secretary/
 ## Tests
 
 ```bash
-npm test            # 191 unit tests
-npm run selftest    # 40 end-to-end checks (fake Telegram + fake model)
+npm test            # 206 unit tests
+npm run selftest    # 43 end-to-end checks (fake Telegram + fake model)
 npm run hw          # machine report
 ```
 
@@ -418,6 +439,25 @@ What the numbers cover:
 - **Serverless quirk:** the Ollama key lives in the database there, because that runtime documents no secrets store. The local runtime reads it from `bot/.env` or the panel.
 
 ## Changelog
+
+### v1.7.3 — the model was repeating itself, so some answers come from code
+
+A real transcript: `سلام` → `سلام! 😊 ما روی از چی؟`, then the same sentence for
+`درست فارسی حرف بزن`, `سیکنتر` and `منو میشناسی؟` — echoing the message and recycling one
+phrase. Diagnosis, not tuning: a 1.7B model cannot be prompted out of this.
+
+**New**
+- **`tgcloud/lib/smalltalk.js`** answers greetings, "who are you", "do you know me" and
+  "thanks" from code, in English, Persian and Arabic — no model call, no waiting, no way to
+  repeat itself. A greeting wrapped around a real question is left to the model.
+- **`tgcloud/lib/degenerate.js`** checks every reply before it is sent: an echo of the
+  message, a phrase that came back from the previous turn, or the same sentence twice. One
+  retry follows at a higher temperature with an explicit correction; if that fails, a short
+  honest sentence is sent instead and kept out of the history, so the loop cannot feed itself.
+- The bot's prompt now says, in as many words, not to repeat the owner's message back at them.
+
+**Note** the retry costs a second model call, but only for a reply that was going to be
+unusable anyway.
 
 ### v1.7.2 — the command now controls what it says it does
 

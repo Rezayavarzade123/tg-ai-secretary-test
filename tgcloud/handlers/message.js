@@ -16,9 +16,11 @@ import { metricsSummary } from '../lib/metrics.js';
 import { listFacts, deleteFact, factsEnabled } from '../lib/memory.js';
 import { updater as updaterImpl } from '../lib/update-bridge.js';
 import { setMuted } from '../lib/secretary.js';
+import { logActivity } from '../lib/activity.js';
 import { parseSendCommand, sendAsOwner, SEND_USAGE } from '../lib/outbox.js';
 import { isOwner, ownerId } from '../lib/owner.js';
-import { LANGUAGES, isLanguage, language, languagePromptName } from '../lib/lang.js';
+import { LANGUAGES, isLanguage, language, languagePromptName, resolveLang } from '../lib/lang.js';
+import { matchSmalltalk } from '../lib/smalltalk.js';
 import { isGroupChat, botIdentity, addressesBot, stripAddress, historyScope, groupMode, threadExtra } from '../lib/groups.js';
 
 const HELP = `Your assistant is ready. Just write to me normally, or use:
@@ -131,9 +133,26 @@ export default async function (message) {
     return;
   }
 
+  // Greetings, "who are you", "do you know me" and "thanks" are answered from code:
+  // instant, in the right language, and impossible to repeat themselves. A 1-2B
+  // model answering "سلام" with "سلام! ما روی از چی؟" is what this prevents.
+  const preferred = await getSetting('lang', DEFAULT_LANG);
+  const autoLang = (await getSetting('lang_auto', DEFAULT_LANG_AUTO)) !== 'off';
+  const replyLang = autoLang ? resolveLang(preferred, text) : preferred;
+
+  const small = matchSmalltalk(text, {
+    ownerName: await getSetting('owner_name', 'your assistant'),
+    lang: replyLang,
+  });
+  if (small) {
+    await say(chatId, small.reply);
+    await logActivity('info', `Answered "${text.slice(0, 40)}" from code (${small.id}).`);
+    return;
+  }
+
   try {
     const answer = await withTyping(chatId, null,
-      () => respond({ scope: 'bot', userText: text, mode: 'bot' }));
+      () => respond({ scope: 'bot', userText: text, mode: 'bot', lang: replyLang === preferred ? null : replyLang }));
     await say(chatId, answer);
   } catch (e) {
     console.error(e);

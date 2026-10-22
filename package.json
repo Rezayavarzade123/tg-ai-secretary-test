@@ -1,6 +1,6 @@
 {
   "name": "tg-ai-secretary",
-  "version": "1.7.2",
+  "version": "1.7.3",
   "description": "A Telegram assistant and secretary that answers for you with a small local model on your own machine: drafts by default, a deterministic safety net, and an auto mode earned by testing the model you actually run.",
   "license": "MIT",
   "private": true,
@@ -25,7 +25,7 @@
     "deploy": "tgcloud push",
     "status": "tgcloud status",
     "migrate": "tgcloud migrate",
-    "test": "node --import ./tests/register.mjs --test tests/outbox.test.mjs tests/text.test.mjs tests/pending.test.mjs tests/prompt.test.mjs tests/typing.test.mjs tests/lang.test.mjs tests/guard.test.mjs tests/local-db.test.mjs tests/panel-settings.test.mjs tests/features.test.mjs tests/panel-ui.test.mjs tests/hardware.test.mjs tests/panel-render.test.mjs tests/groups.test.mjs tests/inline.test.mjs tests/memory.test.mjs tests/updater.test.mjs tests/install.test.mjs tests/cli.test.mjs tests/windows.test.mjs",
+    "test": "node --import ./tests/register.mjs --test tests/degenerate.test.mjs tests/outbox.test.mjs tests/text.test.mjs tests/pending.test.mjs tests/prompt.test.mjs tests/typing.test.mjs tests/lang.test.mjs tests/guard.test.mjs tests/local-db.test.mjs tests/panel-settings.test.mjs tests/features.test.mjs tests/panel-ui.test.mjs tests/hardware.test.mjs tests/panel-render.test.mjs tests/groups.test.mjs tests/inline.test.mjs tests/memory.test.mjs tests/updater.test.mjs tests/install.test.mjs tests/cli.test.mjs tests/windows.test.mjs",
     "hw": "node bot/hardware.mjs"
   },
   "devDependencies": {
