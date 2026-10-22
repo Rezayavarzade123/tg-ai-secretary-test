@@ -628,6 +628,60 @@ await check('a Telegram failure from the panel is a 502, not a 400', async () =>
   await new Promise((resolve) => server.close(resolve));
 });
 
+await check('the login works behind a proxy that rewrites Host', async () => {
+  // A hosted preview URL is exactly this: the browser's Origin is the public host,
+  // the upstream sees its own Host header. The old check refused the login POST
+  // and the panel asked for the token again, forever.
+  const { startPanel } = await import('./panel/server.mjs');
+  const server = await startPanel({ port: 0, host: '127.0.0.1', lanAddress: '127.0.0.1' });
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const post = (headers, body) => realFetch(`${base}/api/login`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...headers },
+    body: JSON.stringify(body),
+  });
+
+  // 1. A browser sends Sec-Fetch-Site: same-origin and pages cannot forge it.
+  const sameSite = await post(
+    { Origin: 'https://panel.example', Host: '127.0.0.1:8787', 'Sec-Fetch-Site': 'same-origin' },
+    { token: 'selftest-token' }
+  );
+  assert.equal(sameSite.status, 200, 'same-origin request is accepted whatever Host says');
+  assert.equal((await sameSite.json()).token, 'selftest-token');
+
+  // 2. A proxy that forwards the public host in X-Forwarded-Host still matches.
+  const forwarded = await post(
+    { Origin: 'https://panel.example', Host: '127.0.0.1:8787', 'X-Forwarded-Host': 'panel.example' },
+    { token: 'selftest-token' }
+  );
+  assert.equal(forwarded.status, 200);
+
+  // 3. Writes that change something still require a trustworthy origin: the panel
+  //    must not be drivable from a hostile page, even with a token-shaped header.
+  const write = (headers) => realFetch(`${base}/api/settings`, {
+    method: 'POST',
+    headers: { Authorization: 'Bearer selftest-token', 'Content-Type': 'application/json', ...headers },
+    body: JSON.stringify({ settings: { lang: 'en' } }),
+  });
+  const hostile = await write({ Origin: 'https://evil.example', Host: '127.0.0.1:8787' });
+  assert.equal(hostile.status, 403, 'a hostile page still cannot drive the panel');
+  assert.match((await hostile.json()).error, /Cross-origin/);
+
+  // 4. ...but the same write from the panel itself works behind the proxy, which is
+  //    what "the page loads, then every Save says 403" would have been next.
+  const proxied = await write({ Origin: 'https://panel.example', Host: '127.0.0.1:8787', 'Sec-Fetch-Site': 'same-origin' });
+  assert.equal(proxied.status, 200, 'a save from the proxied page is accepted');
+  const xfh = await write({ Origin: 'https://panel.example', Host: '127.0.0.1:8787', 'X-Forwarded-Host': 'panel.example' });
+  assert.equal(xfh.status, 200, 'or when the proxy forwards the public host');
+
+  // 5. Signing in is decided by the token alone: a wrong one is a 401, not a 403,
+  //    whatever the origin looks like.
+  const noOriginInfo = await post({ Origin: 'https://elsewhere.example', Host: '127.0.0.1:8787' }, { token: 'wrong' });
+  assert.equal(noOriginInfo.status, 401, 'reached the token check instead of the origin check');
+
+  await new Promise((resolve) => server.close(resolve));
+});
+
 await check('a correct token works even when the browser keeps no cookie', async () => {
   // The failure this guards: a proxy strips Set-Cookie, so the login succeeds and
   // every request after it is anonymous — the panel says "wrong token" forever.

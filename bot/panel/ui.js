@@ -32,14 +32,21 @@ const TITLES = {
 // header path cannot be dropped by anyone in the middle.
 const TOKEN_KEY = 'secretary.panel.token';
 
+// The in-memory copy is the one that always exists. sessionStorage is only there so
+// a reload does not ask again; in a sandboxed frame it throws on access, and there
+// the cookie may be refused as well — the variable still carries the session.
+let memToken = '';
+
 function savedToken() {
+  if (memToken) return memToken;
   try { return sessionStorage.getItem(TOKEN_KEY) || ''; } catch { return ''; }
 }
 function saveToken(token) {
+  memToken = token || '';
   try {
     if (token) sessionStorage.setItem(TOKEN_KEY, token);
     else sessionStorage.removeItem(TOKEN_KEY);
-  } catch { /* private mode, no storage: the cookie has to carry us */ }
+  } catch { /* no storage available: the variable above is enough for this tab */ }
 }
 
 // --- networking ---------------------------------------------------------------

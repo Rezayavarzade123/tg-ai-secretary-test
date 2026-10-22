@@ -207,17 +207,36 @@ function readBody(req, limit = 256 * 1024) {
 
 // Writes must come from the panel itself: blocks a hostile page on the same LAN
 // from posting to it (belt and braces next to SameSite=Strict).
+//
+// The naive version of this — "Origin must equal the Host header" — breaks behind
+// anything that rewrites Host, which is most reverse proxies and every hosted
+// preview URL. The symptom is that the page loads (GET is exempt) but the login
+// POST is refused, so the panel rejects a correct token and shows the box again.
+// Three things fix that without weakening the check:
+//
+//   1. Browsers send Sec-Fetch-Site, and pages cannot set it (forbidden header).
+//      "same-origin" means the document and this request share an origin, which
+//      is exactly what we want to know — regardless of what the proxy did to Host.
+//   2. Proxies that do forward the original host put it in X-Forwarded-Host.
+const SESSION_ROUTES = new Set(['POST /api/login', 'POST /api/logout']);
+
 function checkOrigin(req) {
   if (['GET', 'HEAD', 'OPTIONS'].includes(req.method)) return;
   const origin = req.headers.origin;
   if (!origin) return;                                  // curl / scripts: no Origin header
+
+  if (String(req.headers['sec-fetch-site'] || '').toLowerCase() === 'same-origin') return;
+
   try {
     const o = new URL(origin);
-    const host = req.headers.host;
-    if (o.host === host) return;                        // same origin
-    if (['127.0.0.1', 'localhost', '::1'].includes(o.hostname) && host?.includes(o.hostname)) return;
+    const forwarded = String(req.headers['x-forwarded-host'] || '').split(',').map((h) => h.trim().toLowerCase());
+    const hosts = [req.headers.host, ...forwarded].filter(Boolean).map((h) => String(h).toLowerCase());
+    if (hosts.includes(o.host.toLowerCase())) return;    // same origin, Host intact
+    if (['127.0.0.1', 'localhost', '::1'].includes(o.hostname) && hosts.some((h) => h.includes(o.hostname))) return;
   } catch { /* malformed Origin */ }
-  throw new HttpError(403, 'Cross-origin requests are not allowed.');
+
+  log('warn', `panel: refused a ${req.method} from origin ${origin} (host ${req.headers.host || '?'})`);
+  throw new HttpError(403, `Cross-origin requests are not allowed (origin ${origin}, host ${req.headers.host || '?'}).`);
 }
 
 // --- system info -------------------------------------------------------------------
@@ -550,7 +569,10 @@ async function buildState() {
 async function handleApi(req, res, url) {
   const route = `${req.method} ${url.pathname}`;
   const isWrite = ['POST', 'PUT', 'DELETE', 'PATCH'].includes(req.method);
-  if (isWrite) checkOrigin(req);
+  // Signing in and out are authorised by the token in the body, not by the origin:
+  // a hostile page cannot guess the token (and guesses are throttled), so an origin
+  // check there only ever locks out a legitimate proxy. Every other write keeps it.
+  if (isWrite && !SESSION_ROUTES.has(route)) checkOrigin(req);
   const body = isWrite ? await readBody(req) : {};
 
   if (route === 'GET /api/ping') {
@@ -574,6 +596,7 @@ async function handleApi(req, res, url) {
       return json(res, 200, ACCESS_TOKEN ? { ok: true, token: ACCESS_TOKEN } : { ok: true });
     }
     noteLoginFailure(ip);
+    log('warn', `panel: wrong token from ${ip}`);
     return json(res, 401, { error: 'Wrong token. It is printed when the bot starts, and stored in the panel token file.' });
   }
 
