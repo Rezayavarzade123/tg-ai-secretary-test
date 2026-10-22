@@ -3,7 +3,9 @@ import { displayName, errMsg } from '../lib/text.js';
 import { say, withTyping, tellOwner } from '../lib/telegram.js';
 import { getSetting, setSetting } from '../lib/settings.js';
 import { respond, rememberExchange } from '../lib/brain.js';
-import { isSecretaryConnection, noteContact, touchOwnerActive, shouldReply } from '../lib/secretary.js';
+import { isSecretaryConnection, touchOwnerActive, shouldReply } from '../lib/secretary.js';
+import { getContact, markSeen, langForContact } from '../lib/contacts.js';
+import { inQuietHours, describeWindow } from '../lib/hours.js';
 import { queueFragment, claimBatch, clearPending } from '../lib/pending.js';
 import { canSleep, sleep } from '../lib/wait.js';
 import { isOwner, ownerName } from '../lib/owner.js';
@@ -11,6 +13,7 @@ import { guardOutgoing, looksUrgent, guardTexts } from '../lib/guard.js';
 import { resolveLang } from '../lib/lang.js';
 import { saveDraft, notifyOwner } from '../lib/drafts.js';
 import { logActivity } from '../lib/activity.js';
+import { TIMEZONE } from '../lib/config.js';
 
 // SECRETARY MODE: someone wrote to (or you wrote from) your main account's private chats.
 //
@@ -46,7 +49,16 @@ export default async function (msg) {
   if ((await getSetting('secretary', 'on')) !== 'on' || mode === 'off') return;
 
   const name = displayName(msg.from);
-  await noteContact(chatId, name);
+  await markSeen(chatId, name);
+
+  // A blocked contact is ignored before the model is involved: no draft, no reply,
+  // no tokens. This is the deterministic off-switch for one person.
+  const contact = await getContact(chatId);
+  if (contact?.blocked) {
+    await logActivity('info', `Ignored a message from a blocked chat (${chatId}).`);
+    return;
+  }
+
   if (!(await shouldReply(chatId))) return;
 
   const text = msg.text ?? msg.caption;
@@ -57,9 +69,14 @@ export default async function (msg) {
 
   const owner = await ownerName();
   const preferredLang = await getSetting('lang', DEFAULT_LANG);
-  const lang = resolveLang(preferredLang, text);
   const langAuto = (await getSetting('lang_auto', 'on')) !== 'off';
-  const guardLang = langAuto ? lang : preferredLang;
+  // Per-contact language wins, then "follow the sender", then the global setting.
+  const guardLang = langForContact(contact, {
+    auto: langAuto,
+    fallback: preferredLang,
+    detected: resolveLang(preferredLang, text),
+  });
+  const promptLang = contact?.lang || null;
 
   try {
     // Emergencies never go through a 1-2B model: the fixed sentence is faster and safer.
@@ -88,14 +105,29 @@ export default async function (msg) {
     if (!batch) return;
 
     // Things may have changed while waiting: you replied yourself, or switched secretary mode off.
-    const modeNow = await getSetting('secretary_mode', DEFAULT_SECRETARY_MODE);
+    let modeNow = await getSetting('secretary_mode', DEFAULT_SECRETARY_MODE);
     if ((await getSetting('secretary', 'on')) !== 'on' || modeNow === 'off') return;
     if (!(await shouldReply(chatId))) return;
+
+    // Quiet hours: never send unsupervised at night. The reply is still prepared,
+    // so you find it as a draft instead of an empty chat.
+    if (modeNow === 'auto') {
+      const tz = await getSetting('timezone', TIMEZONE);
+      const quiet = inQuietHours({
+        start: await getSetting('quiet_start', ''),
+        end: await getSetting('quiet_end', ''),
+        tz,
+      });
+      if (quiet) {
+        modeNow = 'draft';
+        await logActivity('info', `Quiet hours (${describeWindow(await getSetting('quiet_start', ''), await getSetting('quiet_end', ''))}): draft instead of an automatic reply.`);
+      }
+    }
 
     // The indicator starts only now, after the reply delay, so the person doesn't see
     // "typing..." for the whole wait while the bot is still collecting their fragments.
     const raw = await withTyping(chatId, batch.connId,
-      () => respond({ scope: `secretary:${chatId}`, userText: batch.text, mode: 'secretary', remember: false }));
+      () => respond({ scope: `secretary:${chatId}`, userText: batch.text, mode: 'secretary', remember: false, chatId, lang: promptLang }));
     const guarded = guardOutgoing(raw, { ownerName: owner, lang: guardLang });
 
     await logActivity('info', `${name} (chat ${chatId}): ${batch.text.slice(0, 180)}`);

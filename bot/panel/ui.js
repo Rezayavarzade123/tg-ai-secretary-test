@@ -13,12 +13,13 @@ const S = {
   draftStatus: 'pending',
   activity: [],
   log: [],
+  contacts: [],
   test: null,        // result of "try the model", kept across refreshes
   dirty: false,      // an unsaved edit is on screen: do not re-render under the user
 };
 
 const TITLES = {
-  dashboard: 'Dashboard', secretary: 'Secretary mode', drafts: 'Drafts',
+  dashboard: 'Dashboard', secretary: 'Secretary mode', drafts: 'Drafts', people: 'People',
   prompts: 'Prompts', notes: 'Notes', activity: 'Activity', setup: 'Setup',
 };
 
@@ -59,6 +60,7 @@ async function refresh({ quiet = true } = {}) {
     S.state = await api('/api/state');
     if (S.tab === 'drafts') S.drafts = (await api(`/api/drafts?status=${encodeURIComponent(S.draftStatus)}`)).drafts;
     if (S.tab === 'notes') S.notes = (await api('/api/notes')).notes;
+    if (S.tab === 'people') S.contacts = (await api('/api/contacts')).contacts;
     if (S.tab === 'prompts') S.prompts = await api('/api/prompts');
     if (S.tab === 'activity') {
       S.activity = (await api('/api/activity')).activity;
@@ -128,7 +130,7 @@ function render() {
   if (!S.state) { view.innerHTML = '<p class="muted">Connecting…</p>'; return; }
 
   const views = {
-    dashboard: viewDashboard, secretary: viewSecretary, drafts: viewDrafts,
+    dashboard: viewDashboard, secretary: viewSecretary, drafts: viewDrafts, people: viewPeople,
     prompts: viewPrompts, notes: viewNotes, activity: viewActivity, setup: viewSetup,
   };
   const y = window.scrollY;
@@ -136,6 +138,51 @@ function render() {
   wire();
   window.scrollTo(0, y);
   S.dirty = false;
+}
+
+function viewLatency() {
+  const st = S.state;
+  const m = st.metrics;
+  const run = (st.probe && st.probe.run) || {};
+  const verdict = (st.probe && st.probe.verdict) || {};
+  const last = m && m.last;
+  return `
+  <div class="grid cols-2" style="margin-top:14px">
+    <div class="card">
+      <h2>Speed</h2>
+      <p class="hint">Measured on this machine, from the server's own timings. Prefill is usually the number that hurts.</p>
+      ${m && m.count ? `
+      <div class="grid cols-3">
+        ${stat('Last reply', last ? `${(last.totalMs / 1000).toFixed(1)} s` : '—', true)}
+        ${stat('Generated', last ? `${last.completionTokens} tok` : '—', true)}
+        ${stat('Prompt', last ? `${last.promptTokens} tok` : '—', true)}
+        ${stat('Out speed', m.decodeTps ? `${m.decodeTps} tok/s` : 'n/a', true, m.decodeTps && m.decodeTps < 5 ? 'warn' : '')}
+        ${stat('Prefill', m.prefillTps ? `${m.prefillTps} tok/s` : 'n/a', true, m.prefillTps && m.prefillTps < 10 ? 'warn' : '')}
+        ${stat('Average', `${m.avgTotalMs} ms`, true)}
+      </div>
+      <p class="hint small" style="margin:10px 0 0">Averaged over the last ${m.count} replies${m.timedCalls ? '' : ' (this server reports no timings, so no tok/s)'}.</p>
+      ` : '<p class="muted">No replies yet. Run the model test above, or send the bot a message.</p>'}
+    </div>
+
+    <div class="card">
+      <h2>Auto-mode gate</h2>
+      <p class="hint">Auto mode answers people without you. It stays locked until a probe shows the guarded replies are safe.</p>
+      <div class="row" style="margin-bottom:10px">
+        <span class="tag ${verdict.ok ? 'ok' : 'warn'}">${verdict.ok ? 'open' : 'locked'}</span>
+        <span class="small muted">${esc(verdict.reason || 'no probe yet')}</span>
+      </div>
+      ${run.running
+        ? `<div class="banner info">Probing… ${run.done}/${run.total}</div>`
+        : run.error ? `<div class="banner bad">${esc(run.error)}</div>` : ''}
+      <div class="row">
+        <button type="button" id="probeBtn" ${run.running ? 'disabled' : ''}>${run.running ? 'Running…' : 'Run probe'}</button>
+        <span class="small muted">8 awkward messages, minutes on a slow CPU</span>
+      </div>
+      ${run.result ? `<div class="banner ${run.result.scoreFinal >= 7 ? 'ok' : ''}" style="margin:10px 0 0">
+        Scored ${run.result.scoreFinal}/${run.result.total} on the text that would actually be sent
+        (the model alone: ${run.result.scoreRaw}/${run.result.total}).</div>` : ''}
+    </div>
+  </div>`;
 }
 
 function stat(k, v, small = false, kind = '') {
@@ -214,6 +261,8 @@ function viewDashboard() {
       ${st.lastError ? `<div class="banner bad" style="margin:14px 0 0"><strong>Last error</strong> (${fmtAgo(st.lastErrorAt)})<br>${esc(st.lastError)}</div>` : ''}
     </div>
   </div>
+
+  ${viewLatency()}
 
   <div class="card" style="margin-top:14px">
     <h2>Machine</h2>
@@ -298,12 +347,31 @@ function viewSecretary() {
         <label for="pauseHours">Stay quiet after you reply yourself (hours)</label>
         <input id="pauseHours" type="number" min="0" max="168" value="${pause}">
       </div>
-      <div class="row" style="justify-content:space-between">
+      <div class="row" style="justify-content:space-between;margin-bottom:12px">
         <div>
           <div>Copy replies to me</div>
           <div class="small muted">Every reply, plus what the safety net replaced.</div>
         </div>
         ${toggle('notifySw', notify, 'Copy secretary replies to me')}
+      </div>
+      <hr style="border:0;border-top:1px solid var(--line);margin:12px 0">
+      <div class="row" style="justify-content:space-between;margin-bottom:6px">
+        <div>
+          <div>Quiet hours</div>
+          <div class="small muted">In this window, auto mode prepares a draft instead of replying. ${st.quiet?.activeNow ? '<strong style="color:var(--warn)">Active now.</strong>' : ''}</div>
+        </div>
+        <span class="tag">${esc(quietLabel(st.quiet))}</span>
+      </div>
+      <div class="row">
+        <div class="grow">
+          <label for="quietStart">From (hour)</label>
+          <input id="quietStart" type="number" min="0" max="23" value="${esc(st.quiet?.start ?? '')}" placeholder="off">
+        </div>
+        <div class="grow">
+          <label for="quietEnd">To (hour)</label>
+          <input id="quietEnd" type="number" min="0" max="23" value="${esc(st.quiet?.end ?? '')}" placeholder="off">
+        </div>
+        <button type="button" class="primary" id="saveQuiet" style="align-self:flex-end">Save</button>
       </div>
     </div>
 
@@ -318,6 +386,54 @@ function viewSecretary() {
       </div>
     </div>
   </div>`;
+}
+
+function quietLabel(q) {
+  if (!q || q.start === '' || q.end === '') return 'off';
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${pad(q.start)}:00–${pad(q.end)}:00`;
+}
+
+// People: one row per chat that has written to the account. A couple of lines of
+// context here does more for reply quality than a bigger model.
+function viewPeople() {
+  const st = S.state;
+  const list = S.contacts || [];
+  return `
+  <div class="card" style="margin-bottom:14px">
+    <h2>People</h2>
+    <p class="hint">Everyone who has written to your account. <strong>Context</strong> is added to the prompt for that chat only — tell it who they are. <strong>Language</strong> overrides the global setting for one person. <strong>Blocked</strong> means the bot ignores them entirely.</p>
+    ${list.length === 0 ? '<p class="muted">Nobody yet. When someone messages your account, they show up here.</p>' : ''}
+  </div>
+  ${list.map((c) => `
+    <div class="item" data-contact="${c.chatId}">
+      <div class="meta">
+        <strong style="color:var(--text)">${esc(c.name || 'Unknown')}</strong>
+        <span>chat ${esc(c.chatId)}</span>
+        ${c.blocked ? '<span class="tag bad">blocked</span>' : ''}
+        ${c.muted ? '<span class="tag warn">muted</span>' : ''}
+        ${c.lang ? `<span class="tag">lang ${esc(c.lang)}</span>` : ''}
+        <span style="margin-left:auto">${c.lastSeenAt ? `seen ${fmtAgo(c.lastSeenAt * 1000)}` : 'not seen yet'}</span>
+      </div>
+      <div class="row" style="align-items:flex-start">
+        <div class="grow">
+          <label for="notes-${c.chatId}">Context (max 400 characters)</label>
+          <textarea id="notes-${c.chatId}" rows="2" dir="auto" placeholder="e.g. Sara is my sister, she knows about the trip">${esc(c.notes || '')}</textarea>
+        </div>
+        <div style="width:170px">
+          <label for="lang-${c.chatId}">Language</label>
+          <select id="lang-${c.chatId}">
+            <option value=""${!c.lang ? ' selected' : ''}>follow the rules</option>
+            ${st.languages.map((l) => `<option value="${l.code}"${c.lang === l.code ? ' selected' : ''}>${esc(l.native)}</option>`).join('')}
+          </select>
+        </div>
+      </div>
+      <div class="row" style="margin-top:9px">
+        <button type="button" class="primary" data-contact-save="${c.chatId}">Save</button>
+        ${toggle(`block-${c.chatId}`, c.blocked, 'Block this person')}
+        <span class="small muted">${c.blocked ? 'ignored completely' : 'block = ignore this chat'}</span>
+      </div>
+    </div>`).join('')}`;
 }
 
 function viewDrafts() {
@@ -565,9 +681,88 @@ function wire() {
 
   // secretary
   document.querySelectorAll('#modeSeg [data-mode]').forEach((b) => {
-    b.onclick = () => saveSettings({ secretary_mode: b.dataset.mode }, `Reply mode set to ${b.dataset.mode}`)
-      .catch((e) => toast(e.message, true));
+    b.onclick = async () => {
+      try {
+        await saveSettings({ secretary_mode: b.dataset.mode }, `Reply mode set to ${b.dataset.mode}`);
+      } catch (e) {
+        if (b.dataset.mode === 'auto' && /locked/i.test(e.message)) {
+          if (window.confirm(`${e.message}\n\nTurn auto mode on anyway?`)) {
+            try { await saveSettings({ secretary_mode: 'auto' }, 'Auto mode on (probe gate overridden)', { force: true }); }
+            catch (e2) { toast(e2.message, true); }
+          }
+          return;
+        }
+        toast(e.message, true);
+      }
+    };
   });
+  const saveQuiet = $('#saveQuiet');
+  if (saveQuiet) {
+    saveQuiet.onclick = async () => {
+      const patch = { quiet_start: $('#quietStart').value.trim(), quiet_end: $('#quietEnd').value.trim() };
+      try { await saveSettings(patch, 'Quiet hours saved'); } catch (e) { toast(e.message, true); }
+    };
+  }
+
+  const probeBtn = $('#probeBtn');
+  if (probeBtn) {
+    probeBtn.onclick = async () => {
+      probeBtn.disabled = true;
+      try {
+        await api('/api/probe', { method: 'POST' });
+        toast('Probe started — this takes a while');
+        // Poll until it finishes rather than leaving the page guessing.
+        for (let i = 0; i < 200; i += 1) {
+          await new Promise((r) => setTimeout(r, 3000));
+          const p = await api('/api/probe');
+          if (!p.run.running) {
+            toast(p.run.error ? `Probe failed: ${p.run.error}` : `Probe finished: ${p.run.result?.scoreFinal}/${p.run.result?.total}`, Boolean(p.run.error));
+            break;
+          }
+          const card = $('#view .banner.info');
+          if (card) card.textContent = `Probing… ${p.run.done}/${p.run.total}`;
+        }
+        S.dirty = false;
+        await refresh({ quiet: false });
+      } catch (e) {
+        toast(e.message, true);
+        probeBtn.disabled = false;
+      }
+    };
+  }
+
+  document.querySelectorAll('[data-contact-save]').forEach((b) => {
+    b.onclick = async () => {
+      const id = b.dataset.contactSave;
+      const notes = document.querySelector(`#notes-${id}`).value;
+      const lang = document.querySelector(`#lang-${id}`).value;
+      try {
+        await api(`/api/contacts/${id}`, { method: 'POST', body: JSON.stringify({ notes, lang }) });
+        toast('Saved');
+        S.dirty = false;
+        await refresh();
+      } catch (e) { toast(e.message, true); }
+    };
+  });
+  document.querySelectorAll('[data-contact] [role="switch"]').forEach((el) => {
+    const item = el.closest('[data-contact]');
+    const id = item?.dataset.contact;
+    if (!id) return;
+    el.onclick = async () => {
+      const next = el.getAttribute('aria-checked') !== 'true';
+      el.setAttribute('aria-checked', next ? 'true' : 'false');
+      try {
+        await api(`/api/contacts/${id}`, { method: 'POST', body: JSON.stringify({ blocked: next }) });
+        toast(next ? `Chat ${id} blocked` : `Chat ${id} unblocked`);
+        S.dirty = false;
+        await refresh();
+      } catch (e) {
+        el.setAttribute('aria-checked', next ? 'false' : 'true');
+        toast(e.message, true);
+      }
+    };
+  });
+
   const langSel = $('#langSel');
   if (langSel) langSel.onchange = () => saveSettings({ lang: langSel.value }, 'Language saved').catch((e) => toast(e.message, true));
 
@@ -755,8 +950,8 @@ function bindToggle(id, onToggle) {
   };
 }
 
-async function saveSettings(patch, okMessage) {
-  await api('/api/settings', { method: 'POST', body: JSON.stringify({ settings: patch }) });
+async function saveSettings(patch, okMessage, extra = {}) {
+  await api('/api/settings', { method: 'POST', body: JSON.stringify({ settings: patch, ...extra }) });
   toast(okMessage || 'Saved');
   S.dirty = false;
   await refresh();

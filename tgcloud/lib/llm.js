@@ -22,6 +22,25 @@ function withTimeout(ms) {
   return {};
 }
 
+// llama-server reports `timings` (prefill and decode in ms); Ollama reports ns;
+// OpenAI-style servers report only token counts. Take whatever exists and leave
+// the rest at 0 rather than guessing.
+function extractUsage(data, provider) {
+  const usage = data?.usage ?? {};
+  const t = data?.timings ?? {};
+  const promptTokens = usage.prompt_tokens ?? t.prompt_n ?? data?.prompt_eval_count ?? 0;
+  const completionTokens = usage.completion_tokens ?? t.predicted_n ?? data?.eval_count ?? 0;
+  const promptMs = t.prompt_ms ?? (data?.prompt_eval_duration ? data.prompt_eval_duration / 1e6 : 0);
+  const decodeMs = t.predicted_ms ?? (data?.eval_duration ? data.eval_duration / 1e6 : 0);
+  return {
+    provider,
+    promptTokens: Number(promptTokens) || 0,
+    completionTokens: Number(completionTokens) || 0,
+    promptMs: Number(promptMs) || 0,
+    decodeMs: Number(decodeMs) || 0,
+  };
+}
+
 function friendlyNetworkError(e, baseUrl) {
   const detail = e?.message ?? String(e);
   const err = new Error(
@@ -91,7 +110,7 @@ export async function localChat({ baseUrl = LOCAL_LLM_URL, apiKey = '', model, m
   }
 
   const msg = data?.choices?.[0]?.message ?? {};
-  return stripThink(msg.content ?? '');
+  return { text: stripThink(msg.content ?? ''), usage: extractUsage(data, 'local') };
 }
 
 // --- Ollama hosted (cloud) -----------------------------------------------------
@@ -131,7 +150,7 @@ export async function cloudChat({ apiKey, model, messages, maxTokens = 700, temp
   } catch {
     throw new Error('Ollama returned a non-JSON response: ' + raw.slice(0, 200));
   }
-  return stripThink(data?.message?.content ?? '');
+  return { text: stripThink(data?.message?.content ?? ''), usage: extractUsage(data, 'cloud') };
 }
 
 // One generation at a time.
@@ -159,10 +178,16 @@ export function chat(args) {
   return serialize(() => doChat(args));
 }
 
-async function doChat({ provider = 'local', apiKey = LLM_API_KEY, baseUrl = LOCAL_LLM_URL, model, messages, maxTokens = 700, temperature = 0.6, timeoutMs = LLM_TIMEOUT_MS }) {
-  return provider === 'cloud'
-    ? cloudChat({ apiKey, model, messages, maxTokens, temperature, timeoutMs })
-    : localChat({ baseUrl, apiKey, model, messages, maxTokens, temperature, timeoutMs });
+async function doChat(args) {
+  const {
+    provider = 'local', apiKey = LLM_API_KEY, baseUrl = LOCAL_LLM_URL,
+    model, messages, maxTokens = 700, temperature = 0.6, timeoutMs = LLM_TIMEOUT_MS,
+  } = args;
+  const started = Date.now();
+  const out = provider === 'cloud'
+    ? await cloudChat({ apiKey, model, messages, maxTokens, temperature, timeoutMs })
+    : await localChat({ baseUrl, apiKey, model, messages, maxTokens, temperature, timeoutMs });
+  return { ...out, ms: Date.now() - started, model, provider };
 }
 
 // --- health, for the panel and /status -----------------------------------------

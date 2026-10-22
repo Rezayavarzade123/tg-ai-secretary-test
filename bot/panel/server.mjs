@@ -23,10 +23,15 @@ import { notes, settings } from '../../tgcloud/schema.js';
 import { getSetting, setSetting, delSetting } from '../../tgcloud/lib/settings.js';
 import { listDrafts, getDraft, sendDraft, ignoreDraft, regenerateDraft, updateDraftText, countPendingDrafts } from '../../tgcloud/lib/drafts.js';
 import { health, llmQueue } from '../../tgcloud/lib/llm.js';
+import { TIMEZONE, DEFAULT_LANG } from '../../tgcloud/lib/config.js';
 import { modelSettings, respond, defaultPrompt } from '../../tgcloud/lib/brain.js';
 import { LANGUAGES, isLanguage } from '../../tgcloud/lib/lang.js';
 import { recentActivity, logActivity } from '../../tgcloud/lib/activity.js';
 import { ownerId, ownerName } from '../../tgcloud/lib/owner.js';
+import { listContacts, getContact, updateContact, NOTES_LIMIT } from '../../tgcloud/lib/contacts.js';
+import { metricsSummary, recentMetrics } from '../../tgcloud/lib/metrics.js';
+import { parseWindow, describeWindow, inQuietHours } from '../../tgcloud/lib/hours.js';
+import { runProbe, saveProbe, lastProbe, probeVerdict } from '../../tgcloud/lib/probe.js';
 import { getStateFile, stats, backup, lockInfo } from '../sdk/store.mjs';
 import { verifyToken } from '../sdk/telegram.mjs';
 import { runtime, uptimeSeconds, log } from '../runtime.mjs';
@@ -310,6 +315,13 @@ function validateSetting(key, rawValue) {
     case 'secretary_info':
       if (value.length > 2000) throw bad('Keep the shareable information under 2000 characters');
       return value;
+    case 'quiet_start':
+    case 'quiet_end': {
+      if (value === '') return '';
+      const n = Number(value);
+      if (!Number.isInteger(n) || n < 0 || n > 23) throw bad('Quiet hours are whole hours between 0 and 23 (or empty for off).');
+      return String(n);
+    }
     default:
       if (NUMERIC[key]) {
         if (value.trim() === '') throw bad(`${key} needs a number`);
@@ -326,7 +338,7 @@ function validateSetting(key, rawValue) {
   }
 }
 
-async function applySetting(key, value) {
+async function applySetting(key, value, { force = false } = {}) {
   switch (key) {
     case 'bot_token': {
       // Verify first: a token that Telegram rejects must never replace a working one.
@@ -367,10 +379,28 @@ async function applySetting(key, value) {
     case 'timezone':
       if (value) await setSetting('timezone', value); else await delSetting('timezone');
       return {};
-    case 'secretary_mode':
+    case 'quiet_start':
+    case 'quiet_end': {
+      const other = key === 'quiet_start' ? await getSetting('quiet_end', '') : await getSetting('quiet_start', '');
+      const pair = key === 'quiet_start' ? parseWindow(value, other) : parseWindow(other, value);
+      if (value !== '' && other !== '' && !pair) {
+        throw bad('Those two hours are the same, which would mean "quiet all day". Pick a different one.');
+      }
+      if (value) await setSetting(key, value); else await delSetting(key);
+      return {};
+    }
+    case 'secretary_mode': {
+      // Same gate as /mode auto: auto mode needs a recent, passing probe.
+      if (value === 'auto' && !force) {
+        const verdict = await probeVerdict();
+        if (!verdict.ok) {
+          throw new HttpError(409, `Auto mode is locked: ${verdict.reason}. Run the probe first, or confirm to override.`);
+        }
+      }
       await setSetting('secretary_mode', value);
       await setSetting('secretary', value === 'off' ? 'off' : 'on');
       return {};
+    }
     case 'secretary':
       await setSetting('secretary', value);
       if (value === 'off') await setSetting('secretary_mode', 'off');
@@ -397,9 +427,47 @@ async function connectionCount() {
   }
 }
 
+// --- probe -------------------------------------------------------------------------
+// A probe is eight generations. On a slow CPU that is minutes, far too long to hold
+// an HTTP request open, so the panel starts it and polls for the result.
+const probeRun = { running: false, startedAt: 0, done: 0, total: 8, error: null, result: null };
+
+async function startProbe() {
+  if (probeRun.running) throw conflict('A probe is already running.');
+  probeRun.running = true;
+  probeRun.startedAt = Date.now();
+  probeRun.done = 0;
+  probeRun.error = null;
+  probeRun.result = null;
+  log('info', 'probe started from the panel');
+
+  (async () => {
+    try {
+      const summary = await runProbe({
+        ownerName: await ownerName(),
+        lang: await getSetting('lang', 'en'),
+        onProgress: (done) => { probeRun.done = done; },
+      });
+      const { modelSettings: ms } = await import('../../tgcloud/lib/brain.js');
+      const model = (await ms()).model;
+      await saveProbe(summary, model);
+      probeRun.result = summary;
+      await logActivity('info', `Panel: probe finished ${summary.scoreFinal}/${summary.total}`);
+      log('info', `probe finished ${summary.scoreFinal}/${summary.total}`);
+    } catch (e) {
+      probeRun.error = e?.message ?? String(e);
+      log('error', `probe failed: ${probeRun.error}`);
+    } finally {
+      probeRun.running = false;
+    }
+  })();
+}
+
 // --- state -------------------------------------------------------------------------
 async function buildState() {
   const ms = await modelSettings();
+  const contacts = await listContacts(200).catch(() => []);
+  const metrics = await metricsSummary(20).catch(() => null);
   const llm = await cachedHealth({ baseUrl: ms.baseUrl, apiKey: ms.apiKey });
   const mem = readMem();
   const draftCount = await countPendingDrafts().catch(() => 0);
@@ -438,6 +506,22 @@ async function buildState() {
     },
     state: { ...stats(), lock: lockInfo() },
     connections: await connectionCount(),
+    contacts,
+    metrics,
+    probe: {
+      verdict: await probeVerdict(),
+      last: await lastProbe(),
+      run: probeRun,
+    },
+    quiet: {
+      start: await getSetting('quiet_start', ''),
+      end: await getSetting('quiet_end', ''),
+      activeNow: inQuietHours({
+        start: await getSetting('quiet_start', ''),
+        end: await getSetting('quiet_end', ''),
+        tz: await getSetting('timezone', TIMEZONE),
+      }),
+    },
     draftsPending: draftCount,
     languages: LANGUAGES,
     settings: await readSettings(),
@@ -496,7 +580,7 @@ async function handleApi(req, res, url) {
 
     const results = {};
     for (const [key, value] of validated) {
-      results[key] = await applySetting(key, value);
+      results[key] = await applySetting(key, value, { force: Boolean(body.force) });
       await logActivity('info', `Panel: ${key} updated`);
     }
     return json(res, 200, { ok: true, results, state: await buildState() });
@@ -580,6 +664,37 @@ async function handleApi(req, res, url) {
     } catch (e) {
       throw bad(e.message);
     }
+  }
+
+  if (route === 'GET /api/contacts') {
+    return json(res, 200, { contacts: await listContacts(200) });
+  }
+  if (req.method === 'POST' && /^\/api\/contacts\/\d+$/.test(url.pathname)) {
+    const chatId = Number(url.pathname.split('/').pop());
+    const patch = {};
+    if ('notes' in body) patch.notes = String(body.notes ?? '');
+    if ('lang' in body) patch.lang = String(body.lang ?? '');
+    if ('blocked' in body) patch.blocked = Boolean(body.blocked);
+    if (!Object.keys(patch).length) throw bad('Nothing to update.');
+    if (patch.notes && patch.notes.length > NOTES_LIMIT) throw bad(`Keep the notes under ${NOTES_LIMIT} characters.`);
+    if (patch.lang && !isLanguage(patch.lang)) throw bad('Unknown language code (or "auto").');
+    try {
+      return json(res, 200, { ok: true, contact: await updateContact(chatId, patch) });
+    } catch (e) {
+      throw bad(e.message);
+    }
+  }
+
+  if (route === 'GET /api/metrics') {
+    return json(res, 200, { summary: await metricsSummary(20), recent: await recentMetrics(40) });
+  }
+
+  if (route === 'GET /api/probe') {
+    return json(res, 200, { run: probeRun, verdict: await probeVerdict(), last: await lastProbe() });
+  }
+  if (route === 'POST /api/probe') {
+    await startProbe();
+    return json(res, 200, { started: true, run: probeRun });
   }
 
   if (route === 'GET /api/activity') return json(res, 200, { activity: await recentActivity(80) });

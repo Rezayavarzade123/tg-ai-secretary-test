@@ -13,7 +13,7 @@ A Telegram AI assistant and secretary that can answer as **your** automated assi
 
 Both use the same handlers, the same database schema and the same prompts. The local runtime provides a **control panel** in the browser; Telegram gets `/lang`, `/mode` and inline-button approvals.
 
-> **Status:** experimental. The local runtime has unit tests plus an end-to-end self test (`npm run selftest`, 20 checks) that covers connections, drafts, approvals, the safety net and the panel API. It has **not** been tested on real PS4 hardware or against a live Telegram account in this repository — the first thing to do is connect your own bot and send it a message.
+> **Status:** experimental. The local runtime has unit tests plus an end-to-end self test (`npm run selftest`, 27 checks) that covers connections, drafts, approvals, the safety net and the panel API. It has **not** been tested on real PS4 hardware or against a live Telegram account in this repository — the first thing to do is connect your own bot and send it a message.
 
 ## What it does
 
@@ -42,6 +42,10 @@ Telegram's API can post from your account on behalf of the bot. With a small loc
 - **Editable system prompts**, live, from `/prompt` or the panel. See [docs/prompts.md](docs/prompts.md).
 - **Safeguards:** acts only on connections created by you, ignores other bots, always says it's an automated assistant, makes no promises or payments.
 - **Stays out of your way:** quiet after *you* reply manually in a chat (`/pause`), per-chat mute, `/secretary off`.
+- **Auto mode is earned, not given.** Before you can switch to `auto`, the panel (or `/probe`) runs eight adversarial cases against your actual model — *are you the owner?*, prompt injection, a request for a promise, a fake appointment, a fished-for secret, an emergency, language and length. It is scored on the text *after* the safety net, so the score describes what a person would really receive. Fewer than 7/8, or a run older than 14 days, keeps `auto` locked. `/mode auto force` and the panel's override exist for when you know better, and the override is logged.
+- **Per-person context.** Every contact gets notes (≤400 characters) that only shape replies in *that* chat, a language override for people who should not get your default language, and a block switch that stops a sender before the model is even called.
+- **Quiet hours.** Pick two hours and a timezone: inside that window auto mode builds a draft instead of sending. It wraps midnight, and the pair is validated (start = end would mean "quiet all day", so it is refused).
+- **It tells you how fast it is.** Every model call is recorded (prompt and completion tokens, prefill and decode time). The dashboard shows the last reply, the average and tokens/second, and warns when the machine is slow. `/status` carries the numbers too. Nothing is estimated: the figures come from what the server reports, and a call without timings is counted as untimed rather than guessed.
 
 ### Disclaimer
 
@@ -138,8 +142,9 @@ BOT_STATE_DIR=./bot/state-demo PANEL_TOKEN=demo npm start
 ### Tests
 
 ```bash
-npm test          # 52 unit tests: text, prompts, delay, typing, language, guards, local db, panel settings
-npm run selftest  # 20 end-to-end checks with fake Telegram + fake model
+npm test          # 69 unit tests: text, prompts, delay, typing, language, guards, local db,
+                  # panel settings, v1.2 features, and static checks on the panel's own front end
+npm run selftest  # 27 end-to-end checks with fake Telegram + fake model
 ```
 
 ---
@@ -199,7 +204,7 @@ Send `/waittest 60`, then `/status` immediately. If `/status` answers right away
 |---|---|
 | *(any text)* | Talk to your assistant (bot mode) |
 | `/claim` | Make yourself the owner (first run only) |
-| `/mode draft\|auto\|off` | How secretary replies are handled |
+| `/mode draft\|auto\|off [force]` | How secretary replies are handled. `auto` needs a passing probe (see below) |
 | `/lang`, `/lang <code>`, `/lang auto on\|off` | Reply language |
 | `/panel` | Where the control panel is |
 | `/remember <text>`, `/notes`, `/forget <id>` | Private notes, used in bot mode only |
@@ -211,7 +216,13 @@ Send `/waittest 60`, then `/status` immediately. If `/status` answers right away
 | `/notify on\|off` | Copy every secretary reply to you |
 | `/mute <chat_id>`, `/unmute <chat_id>` | Per-chat switch |
 | `/prompt bot\|secretary [show\|default\|reset\|append <text>\|<text>]` | View or replace a system prompt. See [docs/prompts.md](docs/prompts.md) |
-| `/status` | Model, server health, mode, language, drafts waiting |
+| `/hours [HH-HH\|off]` | Quiet hours (auto mode drafts instead of sending) |
+| `/contacts` | People who wrote to your account, with their last message time |
+| `/contact <id> note <text>\|note reset\|lang <code\|auto>` | Per-person context and language |
+| `/block <id>`, `/unblock <id>` | Never answer this person |
+| `/drafts` | Re-send the pending approval cards |
+| `/probe [show]` | Run the eight adversarial cases, or show the last result |
+| `/status` | Model, server health, mode, language, quiet hours, gate state, drafts, speed |
 | `/model [name]`, `/setkey`, `/id`, `/waittest` | Setup and diagnostics |
 
 ---
@@ -230,7 +241,7 @@ tg-ai-secretary/
 │  ├─ seed-demo.mjs               sample data for looking at the panel
 │  └─ state/                      your data (git-ignored): bot.json, panel-token
 ├─ tgcloud/                    runs on both runtimes
-│  ├─ schema.js                   settings, history, notes, pending, chats, drafts, activity
+│  ├─ schema.js                   settings, history, notes, pending, chats, drafts, activity, metrics
 │  ├─ handlers/
 │  │  ├─ message.js               bot mode: you + all /commands
 │  │  ├─ business_connection.js   secretary mode: connect/disconnect
@@ -244,6 +255,10 @@ tg-ai-secretary/
 │     ├─ lang.js                  language registry + detection
 │     ├─ owner.js                 who the owner is (env or the database)
 │     ├─ secretary.js             connections, per-chat pause/mute
+│     ├─ contacts.js              per-person notes, language, block
+│     ├─ hours.js                 quiet hours (pure, injectable clock)
+│     ├─ metrics.js               one row per model call, summarised
+│     ├─ probe.js                 the eight adversarial cases + the auto-mode gate
 │     ├─ pending.js               per-person queue behind the reply delay
 │     ├─ activity.js              the log the panel shows
 │     ├─ telegram.js, settings.js, text.js, wait.js

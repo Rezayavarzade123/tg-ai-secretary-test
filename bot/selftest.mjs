@@ -26,6 +26,7 @@ process.env.LLM_BASE_URL = 'http://127.0.0.1:8080';
 const realFetch = globalThis.fetch;
 const sent = [];
 const edited = [];
+const modelRequests = [];
 const answered = [];
 let messageId = 900;
 
@@ -61,6 +62,7 @@ globalThis.fetch = async (url, options = {}) => {
   }
 
   if (u.includes('/v1/chat/completions')) {
+    modelRequests.push(body);
     const lastUser = [...(body.messages ?? [])].reverse().find((m) => m.role === 'user')?.content ?? '';
     const content = /promise|pay me|book/i.test(lastUser)
       ? "Yes, I'll call you tomorrow at 5pm and pay in cash."
@@ -263,7 +265,8 @@ await check('/status reports the local brain, the model server and the drafts', 
 });
 
 await check('/mode and /lang from Telegram change the same settings the panel writes', async () => {
-  await botMessage({ message_id: 12, chat: { id: OWNER, type: 'private' }, from: { id: OWNER, first_name: 'Sam' }, text: '/mode auto' });
+  // "force" is the documented way past the probe gate, which this check exercises later.
+  await botMessage({ message_id: 12, chat: { id: OWNER, type: 'private' }, from: { id: OWNER, first_name: 'Sam' }, text: '/mode auto force' });
   assert.equal(await getSetting('secretary_mode'), 'auto');
   assert.equal(await getSetting('secretary'), 'on');
 
@@ -283,6 +286,151 @@ await check('a stranger writing to the bot directly is ignored', async () => {
   const before = sent.length;
   await botMessage({ message_id: 16, chat: { id: 4242, type: 'private' }, from: { id: 4242, first_name: 'Nobody' }, text: 'hello?' });
   assert.equal(sent.length, before, 'no reply, no model call');
+});
+
+// ---------------------------------------------------------------- v1.2 features
+
+await check('a blocked contact is ignored entirely — no model call, no draft', async () => {
+  const { updateContact } = await import('../tgcloud/lib/contacts.js');
+  const { listDrafts: list } = await import('../tgcloud/lib/drafts.js');
+  await updateContact(5005, { blocked: true });
+  const draftsBefore = (await list({ status: 'all', limit: 50 })).length;
+  const callsBefore = modelRequests.length;
+
+  await businessMessage({
+    business_connection_id: 'conn-1',
+    chat: { id: 5005, type: 'private' },
+    from: { id: 5005, first_name: 'Blocked' },
+    text: 'hello?',
+  });
+
+  assert.equal(modelRequests.length, callsBefore, 'the model was never asked');
+  assert.equal((await list({ status: 'all', limit: 50 })).length, draftsBefore, 'no draft was created');
+});
+
+await check('context and a fixed language for one contact reach the prompt and the draft', async () => {
+  const { updateContact } = await import('../tgcloud/lib/contacts.js');
+  const { listDrafts: list } = await import('../tgcloud/lib/drafts.js');
+  await updateContact(6006, { notes: 'Sara is my sister', lang: 'fa' });
+  await setSetting('lang_auto', 'on');
+  await setSetting('lang', 'en');
+  const callsBefore = modelRequests.length;
+
+  await businessMessage({
+    business_connection_id: 'conn-1',
+    chat: { id: 6006, type: 'private' },
+    from: { id: 6006, first_name: 'Sara' },
+    text: 'Hi, are you around on Friday?',
+  });
+
+  const req = modelRequests[callsBefore];
+  assert.ok(req, 'the model was asked');
+  const system = req.messages.find((m) => m.role === 'system').content;
+  assert.match(system, /Sara is my sister/, 'the context is in the system prompt');
+  assert.match(system, /always reply in Persian/, 'the per-contact language overrides the sender language');
+
+  const all = await list({ status: 'all', limit: 50 });
+  const draft = all.find((d) => d.chatId === 6006);
+  assert.ok(draft, 'a draft was created');
+  assert.equal(draft.lang, 'fa', 'the safety net uses the contact language too');
+});
+
+await check('quiet hours turn an automatic reply into a draft', async () => {
+  const { hourIn } = await import('../tgcloud/lib/hours.js');
+  const { listDrafts: list } = await import('../tgcloud/lib/drafts.js');
+  await setSetting('timezone', 'UTC');
+  const h = hourIn('UTC');
+  await setSetting('quiet_start', String((h + 23) % 24));
+  await setSetting('quiet_end', String((h + 1) % 24));
+  await setSetting('secretary_mode', 'auto');
+
+  const sentBefore = sent.length;
+  await businessMessage({
+    business_connection_id: 'conn-1',
+    chat: { id: 7007, type: 'private' },
+    from: { id: 7007, first_name: 'Night' },
+    text: 'are you awake?',
+  });
+
+  assert.ok(!sent.some((m) => m.chat_id === 7007), 'nothing was sent to the contact');
+  const draft = (await list({ status: 'pending', limit: 50 })).find((d) => d.chatId === 7007);
+  assert.ok(draft, 'a draft waits instead');
+
+  await setSetting('quiet_start', '');
+  await setSetting('quiet_end', '');
+  await setSetting('secretary_mode', 'draft');
+});
+
+await check('auto mode is locked until a probe passes', async () => {
+  await setSetting('probe_last', '');
+  await setSetting('secretary_mode', 'draft');
+  const before = sent.length;
+  await botMessage({ message_id: 21, chat: { id: OWNER, type: 'private' }, from: { id: OWNER, first_name: 'Sam' }, text: '/mode auto' });
+  const reply = sent.slice(before).at(-1);
+  assert.match(reply.text, /Not switching to auto yet/);
+  assert.match(reply.text, /\/probe/);
+  assert.equal(await getSetting('secretary_mode'), 'draft', 'still on drafts');
+
+  // /probe runs the real cases against the fake model, and saves the verdict.
+  const probeBefore = sent.length;
+  await botMessage({ message_id: 22, chat: { id: OWNER, type: 'private' }, from: { id: OWNER, first_name: 'Sam' }, text: '/probe' });
+  const probeReply = sent.slice(probeBefore).at(-1);
+  assert.match(probeReply.text, /Probe: \d+\/8/);
+  assert.ok(await getSetting('probe_last'), 'the result was stored');
+
+  const after = sent.length;
+  await botMessage({ message_id: 23, chat: { id: OWNER, type: 'private' }, from: { id: OWNER, first_name: 'Sam' }, text: '/mode auto' });
+  const ok = sent.slice(after).at(-1);
+  const stored = JSON.parse(await getSetting('probe_last'));
+  if (stored.scoreFinal >= 7) {
+    assert.match(ok.text, /Auto mode/, 'the gate opened after a passing probe');
+    assert.equal(await getSetting('secretary_mode'), 'auto');
+  } else {
+    assert.match(ok.text, /Not switching to auto yet/, 'a failing probe keeps the gate shut');
+  }
+  await setSetting('secretary_mode', 'draft');
+});
+
+await check('reply timing is recorded and reported', async () => {
+  const { metricsSummary } = await import('../tgcloud/lib/metrics.js');
+  const m = await metricsSummary(20);
+  assert.ok(m.count > 0, 'the fake model calls were measured');
+  assert.ok(m.avgTotalMs >= 0);
+
+  const before = sent.length;
+  await botMessage({ message_id: 24, chat: { id: OWNER, type: 'private' }, from: { id: OWNER, first_name: 'Sam' }, text: '/status' });
+  const reply = sent.slice(before).at(-1);
+  assert.match(reply.text, /Last \d+ replies/);
+  assert.match(reply.text, /Auto mode gate: (open|locked)/);
+});
+
+await check('/drafts re-sends the pending cards', async () => {
+  const { countPendingDrafts } = await import('../tgcloud/lib/drafts.js');
+  const pending = await countPendingDrafts();
+  const before = sent.length;
+  await botMessage({ message_id: 25, chat: { id: OWNER, type: 'private' }, from: { id: OWNER, first_name: 'Sam' }, text: '/drafts' });
+  const newMessages = sent.slice(before);
+  assert.ok(newMessages.length >= 1);
+  assert.match(newMessages[0].text, /draft/i);
+  if (pending > 0) assert.ok(newMessages.some((m) => m.reply_markup?.inline_keyboard), 'the cards came with buttons');
+});
+
+await check('/hours and /contact are validated, not just stored', async () => {
+  const before = sent.length;
+  await botMessage({ message_id: 26, chat: { id: OWNER, type: 'private' }, from: { id: OWNER, first_name: 'Sam' }, text: '/hours 25-30' });
+  assert.match(sent.slice(before).at(-1).text, /Usage: \/hours/);
+  assert.equal(await getSetting('quiet_start', ''), '', 'nothing stored from a bad window');
+
+  const before2 = sent.length;
+  await botMessage({ message_id: 27, chat: { id: OWNER, type: 'private' }, from: { id: OWNER, first_name: 'Sam' }, text: '/hours 22-08' });
+  assert.match(sent.slice(before2).at(-1).text, /22:00–08:00/);
+  assert.equal(await getSetting('quiet_start'), '22');
+  await setSetting('quiet_start', '');
+  await setSetting('quiet_end', '');
+
+  const before3 = sent.length;
+  await botMessage({ message_id: 28, chat: { id: OWNER, type: 'private' }, from: { id: OWNER, first_name: 'Sam' }, text: '/contact 6006 lang klingon' });
+  assert.match(sent.slice(before3).at(-1).text, /Unknown language/);
 });
 
 await check('the control panel answers with live state, and never leaks its token', async () => {

@@ -38,12 +38,21 @@ export const pending = table('pending', {
 }));
 
 // People who messaged your main account (Secretary mode).
+// `notes` and `lang` are yours: short context about the sender ("Sara is my sister"),
+// and an optional reply language for that one chat. `blocked` makes the bot ignore
+// the chat completely — no draft, no reply, no model call.
 export const secretaryChats = table('secretary_chats', {
   chatId:      integer('chat_id').primaryKey(),
   name:        text('name'),
   ownerLastAt: integer('owner_last_at').default(0),   // unix seconds of your last manual reply
   muted:       boolean('muted').default(false),
-});
+  notes:       text('notes').default(''),
+  lang:        text('lang').default(''),
+  blocked:     boolean('blocked').default(false),
+  lastSeenAt:  integer('last_seen_at').default(0),
+}, (t) => ({
+  seenIdx: index('idx_chats_seen').on(t.lastSeenAt, t.chatId),
+}));
 
 // Draft replies waiting for your approval (secretary mode = "draft").
 // The bot generates the answer, shows it to you in Telegram and in the control
@@ -64,6 +73,23 @@ export const drafts = table('drafts', {
   resolved:  integer('resolved_at'),
 }, (t) => ({
   statusIdx: index('idx_drafts_status').on(t.status, t.id),
+}));
+
+// One row per model call: how long it took and how many tokens went through.
+// On a slow machine this is the difference between "the bot is broken" and
+// "the prompt is too long" — the panel charts the last 20 calls.
+export const metrics = table('metrics', {
+  id:          integer('id').primaryKey({ autoIncrement: true }),
+  at:          integer('at').notNull(),            // unix seconds
+  mode:        text('mode').notNull(),             // bot | secretary
+  model:       text('model'),
+  promptTokens:     integer('prompt_tokens').default(0),
+  completionTokens: integer('completion_tokens').default(0),
+  promptMs:    integer('prompt_ms').default(0),    // prefill
+  decodeMs:    integer('decode_ms').default(0),    // generation
+  totalMs:     integer('total_ms').default(0),
+}, (t) => ({
+  atIdx: index('idx_metrics_at').on(t.at, t.id),
 }));
 
 // Human-readable log for the control panel ("message from Sara", "draft sent"...).

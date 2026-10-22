@@ -1,14 +1,18 @@
 import { api, db } from 'sdk';
 import { eq, asc } from 'sdk/db';
 import { notes } from '../schema.js';
-import { DEFAULT_MODEL, LOCAL_LLM_URL, DEFAULT_PAUSE_HOURS, DEFAULT_REPLY_DELAY, DEFAULT_SECRETARY_MODE, DEFAULT_LANG, MAX_REPLY_DELAY, MAX_PROMPT_CHARS, MAX_PROMPT_FILE_BYTES } from '../lib/config.js';
+import { DEFAULT_MODEL, LOCAL_LLM_URL, TIMEZONE, DEFAULT_PAUSE_HOURS, DEFAULT_REPLY_DELAY, DEFAULT_SECRETARY_MODE, DEFAULT_LANG, MAX_REPLY_DELAY, MAX_PROMPT_CHARS, MAX_PROMPT_FILE_BYTES } from '../lib/config.js';
 import { canSleep, sleep } from '../lib/wait.js';
 import { parseCommand, displayName, errMsg, decodeUtf8 } from '../lib/text.js';
 import { say, withTyping } from '../lib/telegram.js';
 import { getSetting, setSetting, delSetting } from '../lib/settings.js';
 import { respond, resetHistory, defaultPrompt } from '../lib/brain.js';
 import { health } from '../lib/llm.js';
-import { countPendingDrafts } from '../lib/drafts.js';
+import { countPendingDrafts, listDrafts, notifyOwner } from '../lib/drafts.js';
+import { parseWindow, describeWindow } from '../lib/hours.js';
+import { listContacts, getContact, updateContact, NOTES_LIMIT } from '../lib/contacts.js';
+import { runProbe, saveProbe, formatProbe, probeVerdict, lastProbe } from '../lib/probe.js';
+import { metricsSummary } from '../lib/metrics.js';
 import { setMuted } from '../lib/secretary.js';
 import { isOwner, ownerId } from '../lib/owner.js';
 import { LANGUAGES, isLanguage, language, languagePromptName } from '../lib/lang.js';
@@ -24,6 +28,17 @@ This private chat
 Secretary mode (I answer people who message your main account)
 /mode draft|auto|off  draft = you approve each reply, auto = send it, off = never
 /secretary on|off  master switch for secretary mode
+/drafts  re-send the cards for my pending drafts
+/hours [HH-HH|off]  quiet hours: draft instead of replying (e.g. /hours 22-08)
+
+People (context makes a small model much better)
+/contacts  list the people who wrote to me
+/contact <chat_id> note <text>  what I should know about them
+/contact <chat_id> lang <code|auto>  always answer them in this language
+/block <chat_id>, /unblock <chat_id>  ignore this person completely
+
+Safety
+/probe  test the model against the questions it should fail safely (needed for auto)
 /secretaryinfo <text>  what I may tell people (hours, how to reach you...)
 /delay <seconds>  wait after a person's last message before answering (0 = off)
 /pause <hours>  stay quiet in a chat after you reply there yourself
@@ -140,6 +155,148 @@ async function runCommand(chatId, message, { cmd, arg }) {
       return;
     }
 
+    case 'hours': {
+      const start = await getSetting('quiet_start', '');
+      const end = await getSetting('quiet_end', '');
+      const tz = await getSetting('timezone', TIMEZONE);
+      if (!arg) {
+        await say(chatId,
+          `Quiet hours: ${describeWindow(start, end)} (${tz})\n` +
+          `During quiet hours I never send an automatic reply — I prepare the draft and you find it later.\n\n` +
+          `/hours 22-08  set a window (your timezone)\n/hours off    turn it off`);
+        return;
+      }
+      if (/^(off|no|0)$/i.test(arg)) {
+        await delSetting('quiet_start');
+        await delSetting('quiet_end');
+        await say(chatId, 'Quiet hours off: auto mode can reply at any hour.');
+        return;
+      }
+      const m = /^(\d{1,2})\s*(?:-|–|to|until)\s*(\d{1,2})$/.exec(arg);
+      if (!m || !parseWindow(m[1], m[2])) {
+        await say(chatId, 'Usage: /hours 22-08  (two hours, 0–23, and they must differ)');
+        return;
+      }
+      await setSetting('quiet_start', m[1]);
+      await setSetting('quiet_end', m[2]);
+      await say(chatId, `Quiet hours set to ${describeWindow(m[1], m[2])} (${tz}). In that window a reply becomes a draft.`);
+      return;
+    }
+
+    case 'contacts': {
+      const rows = await listContacts(12);
+      if (!rows.length) {
+        await say(chatId, 'Nobody has written to your account yet, or secretary mode has never been used.');
+        return;
+      }
+      await say(chatId, rows.map((c) => {
+        const bits = [];
+        if (c.lang) bits.push(`lang ${c.lang}`);
+        if (c.blocked) bits.push('BLOCKED');
+        else if (c.muted) bits.push('muted');
+        const note = c.notes ? `\n   ${c.notes.slice(0, 80)}` : '';
+        return `${c.blocked ? '⛔' : '•'} ${c.name || 'Unknown'} — ${c.chatId}${bits.length ? ` [${bits.join(', ')}]` : ''}${note}`;
+      }).join('\n') + '\n\n/contact <chat_id> note <text> · /block <chat_id>');
+      return;
+    }
+
+    case 'contact': {
+      const m = /^(\d+)\s*(.*)$/s.exec(arg);
+      if (!m) {
+        await say(chatId, 'Usage:\n/contact <chat_id>  show\n/contact <chat_id> note <text>  set context (max ' + NOTES_LIMIT + ' chars)\n/contact <chat_id> note reset\n/contact <chat_id> lang <code|auto>');
+        return;
+      }
+      const id = Number(m[1]);
+      const rest = (m[2] || '').trim();
+      const c = await getContact(id);
+      if (!rest) {
+        if (!c) { await say(chatId, `I have no record of chat ${id}.`); return; }
+        await say(chatId,
+          `Chat ${id} — ${c.name || 'Unknown'}\n` +
+          `Language: ${c.lang || 'follow the sender'}\n` +
+          `Blocked: ${c.blocked ? 'yes' : 'no'}\n` +
+          `Context: ${c.notes || '(none)'}`);
+        return;
+      }
+      const nm = /^notes?\s+(.*)$/is.exec(rest);
+      if (nm) {
+        const text = nm[1].trim();
+        if (/^reset$/i.test(text)) {
+          await updateContact(id, { notes: '' });
+          await say(chatId, `Context for chat ${id} cleared.`);
+          return;
+        }
+        await updateContact(id, { notes: text });
+        await say(chatId, `Saved for chat ${id}. I will use this when replying to them — it is the only thing I know about them.`);
+        return;
+      }
+      const lm = /^lang\s+(\S+)$/i.exec(rest);
+      if (lm) {
+        const v = lm[1].toLowerCase();
+        if (v === 'auto' || v === 'reset') {
+          await updateContact(id, { lang: '' });
+          await say(chatId, `Chat ${id} now follows the usual language rules.`);
+          return;
+        }
+        if (!isLanguage(v)) { await say(chatId, `Unknown language "${v}". Use one of: ${LANGUAGES.map((l) => l.code).join(', ')}`); return; }
+        await updateContact(id, { lang: v });
+        await say(chatId, `Chat ${id} will always be answered in ${languagePromptName(v)}.`);
+        return;
+      }
+      await say(chatId, 'Usage: /contact <chat_id> note <text>  or  /contact <chat_id> lang <code|auto>');
+      return;
+    }
+
+    case 'block':
+    case 'unblock': {
+      const id = Number(arg);
+      if (!Number.isInteger(id)) { await say(chatId, `Usage: /${cmd} <chat_id>`); return; }
+      await updateContact(id, { blocked: cmd === 'block' });
+      await say(chatId, cmd === 'block'
+        ? `⛔ Chat ${id} is blocked: I will not read, draft or answer anything there.`
+        : `Chat ${id} unblocked.`);
+      return;
+    }
+
+    case 'drafts': {
+      const pending = await listDrafts({ status: 'pending', limit: 5 });
+      const total = await countPendingDrafts();
+      if (!pending.length) { await say(chatId, 'No drafts waiting. Everything is answered or ignored.'); return; }
+      await say(chatId, `${total} draft${total === 1 ? '' : 's'} waiting. Re-sending ${pending.length === total ? 'them all' : `the newest ${pending.length}`} below.`);
+      for (const d of pending) await notifyOwner(d);
+      return;
+    }
+
+    case 'probe': {
+      const last = await lastProbe();
+      if (arg.toLowerCase() === 'show' && last) { await say(chatId, formatProbe(last)); return; }
+      const tzNote = 'This runs the model against 8 awkward messages; on a slow machine it takes minutes.';
+      await say(chatId, `🧪 Probing… ${tzNote}`);
+      let progressMsgId = null;
+      try {
+        const sent = await api.sendMessage({ chat_id: chatId, text: '0/8' });
+        progressMsgId = sent?.message_id;
+      } catch { /* progress is a nicety */ }
+
+      const lang = await getSetting('lang', DEFAULT_LANG);
+      const summary = await runProbe({
+        ownerName: await getSetting('owner_name', 'the owner'),
+        lang,
+        onProgress: async (done, total) => {
+          if (!progressMsgId || done % 2) return;
+          try { await api.editMessageText({ chat_id: chatId, message_id: progressMsgId, text: `${done}/${total}` }); } catch { /* ignore */ }
+        },
+      });
+      const { modelSettings } = await import('../lib/brain.js');
+      const { model } = await modelSettings();
+      await saveProbe(summary, model);
+      if (progressMsgId) {
+        try { await api.deleteMessage({ chat_id: chatId, message_id: progressMsgId }); } catch { /* ignore */ }
+      }
+      await say(chatId, formatProbe(summary));
+      return;
+    }
+
     case 'lang': {
       const cur = await getSetting('lang', DEFAULT_LANG);
       const auto = (await getSetting('lang_auto', 'on')) !== 'off';
@@ -174,7 +331,8 @@ async function runCommand(chatId, message, { cmd, arg }) {
 
     case 'mode': {
       const cur = await getSetting('secretary_mode', DEFAULT_SECRETARY_MODE);
-      const v = arg.toLowerCase();
+      // "/mode auto force": the first word is the mode, the rest are flags.
+      const [v, ...flags] = arg.toLowerCase().split(/\s+/);
       if (!['draft', 'auto', 'off'].includes(v)) {
         await say(chatId,
           `Secretary replies are currently: ${cur.toUpperCase()}\n\n` +
@@ -182,6 +340,21 @@ async function runCommand(chatId, message, { cmd, arg }) {
           `/mode auto   send it after the safety checks\n` +
           `/mode off    never answer on my account`);
         return;
+      }
+      if (v === 'auto') {
+        // The gate: auto mode must be earned by a recent, passing probe.
+        const force = flags.includes('force');
+        const verdict = await probeVerdict();
+        if (!verdict.ok && !force) {
+          await say(chatId,
+            `🔒 Not switching to auto yet: ${verdict.reason}.\n\n` +
+            `Run /probe first — it checks the replies that would actually be sent, including the safety net. ` +
+            `Auto needs ${verdict.min}/8.\n` +
+            `Drafts work exactly the same without it.\n\n` +
+            `(If you know what you are doing: /mode auto force)`);
+          return;
+        }
+        await setSetting('probe_forced_at', verdict.ok ? '' : String(Math.floor(Date.now() / 1000)));
       }
       await setSetting('secretary_mode', v);
       await setSetting('secretary', v === 'off' ? 'off' : 'on');
@@ -401,6 +574,19 @@ async function runCommand(chatId, message, { cmd, arg }) {
       const lang = await getSetting('lang', DEFAULT_LANG);
       const auto = (await getSetting('lang_auto', 'on')) !== 'off';
       const drafts = await countPendingDrafts();
+      const contacts = (await listContacts(500)).length;
+      const blocked = (await listContacts(500)).filter((c) => c.blocked).length;
+      const quiet = describeWindow(await getSetting('quiet_start', ''), await getSetting('quiet_end', ''));
+      const probe = await probeVerdict();
+      let speed = '';
+      try {
+        const m = await metricsSummary(20);
+        if (m.count) {
+          speed = m.timedCalls
+            ? `Last ${m.count} replies: ${m.avgTotalMs} ms avg, ${m.decodeTps} tok/s out, ${m.prefillTps} tok/s prefill, ~${m.avgPromptTokens} prompt tokens`
+            : `Last ${m.count} replies: ${m.avgTotalMs} ms avg (the server reported no timings, so no tok/s)`;
+        }
+      } catch { /* metrics are optional */ }
       let brain = '';
       try {
         const h = await health({ baseUrl });
@@ -418,7 +604,11 @@ async function runCommand(chatId, message, { cmd, arg }) {
         `Secretary mode: ${(await getSetting('secretary', 'on')).toUpperCase()} (${mode})\n` +
         `Connected accounts: ${conns}${conns ? '' : '  (connect me in Telegram Settings > Account > Chat Automation)'}\n` +
         `Language: ${languagePromptName(lang)}${auto ? ', following the person' : ', fixed'}\n` +
+        `Quiet hours: ${quiet}\n` +
+        `Contacts known: ${contacts}${blocked ? ` (${blocked} blocked)` : ''}\n` +
+        `Auto mode gate: ${probe.ok ? 'open' : 'locked'} — ${probe.reason}\n` +
         `Drafts waiting for you: ${drafts}\n` +
+        `${speed ? speed + '\n' : ''}` +
         `Reply delay: ${await getSetting('delay_seconds', String(DEFAULT_REPLY_DELAY))} s${canSleep ? '' : ' (timers unavailable, ignored)'}\n` +
         `Pause after your manual reply: ${await getSetting('pause_hours', String(DEFAULT_PAUSE_HOURS))} h\n` +
         `Copy secretary replies to me: ${(await getSetting('notify', 'on')).toUpperCase()}`);
